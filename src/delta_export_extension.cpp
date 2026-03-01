@@ -1,11 +1,8 @@
-#define DUCKDB_EXTENSION_MAIN
-
 #include "delta_export_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/main/extension_util.hpp"
 #include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
