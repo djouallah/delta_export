@@ -4,7 +4,8 @@
 # Require the extension to be loaded
 require delta_export
 
-# Test that the function exists (will error because no ducklake metadata tables exist)
-statement error
-CALL export_delta();
+# Verify the export_delta table function is registered
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'export_delta' AND function_type = 'table';
 ----
+1
