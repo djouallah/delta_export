@@ -1,5 +1,5 @@
 # name: test/sql/delta_export.test
-# group: [delta_export]
+# group: [sql]
 
 # Require the extension to be loaded
 require delta_export

@@ -583,7 +583,7 @@ struct DeltaExportGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> DeltaExportBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind_data = make_uniq<DeltaExportBindData>();
 	bind_data->metadata_db_path = input.inputs[0].GetValue<string>();
 
@@ -606,7 +606,7 @@ static unique_ptr<FunctionData> DeltaExportBind(ClientContext &context, TableFun
 }
 
 static unique_ptr<GlobalTableFunctionState> DeltaExportGlobalInit(ClientContext &context,
-                                                                    TableFunctionInitInput &input) {
+                                                                  TableFunctionInitInput &input) {
 	return make_uniq<DeltaExportGlobalState>();
 }
 
@@ -644,7 +644,8 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	// Check if already attached (user may have it open already)
 	bool already_attached = false;
 	try {
-		auto check = context.Query("SELECT 1 FROM information_schema.schemata WHERE catalog_name = '" + attach_name + "' LIMIT 1", false);
+		auto check = context.Query(
+		    "SELECT 1 FROM information_schema.schemata WHERE catalog_name = '" + attach_name + "' LIMIT 1", false);
 		if (!check->HasError()) {
 			auto materialized = check->Cast<MaterializedQueryResult>();
 			if (materialized.RowCount() > 0) {
@@ -702,7 +703,9 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		for (idx_t i = 0; i < dirs_materialized.RowCount(); i++) {
 			string dir_path = dirs_materialized.GetValue(0, i).ToString();
 			string create_dir_sql = "COPY (SELECT 1 AS id, 1 AS \".duckdb_init\") "
-			                        "TO '" + dir_path + "' "
+			                        "TO '" +
+			                        dir_path +
+			                        "' "
 			                        "(FORMAT CSV, PARTITION_BY (\".duckdb_init\"), OVERWRITE_OR_IGNORE);";
 			ExecuteSQL(context, create_dir_sql);
 		}
@@ -721,31 +724,40 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 			ExecuteSQL(context, "BEGIN TRANSACTION;");
 
 			// Write checkpoint parquet
+			string tid = std::to_string(table_id);
+			string sid = std::to_string(snapshot_id);
+
 			string copy_parquet = "COPY (SELECT protocol, metaData, add, remove, commitInfo "
 			                      "FROM temp_checkpoint_parquet "
-			                      "WHERE table_id = " + std::to_string(table_id) +
-			                      " AND snapshot_id = " + std::to_string(snapshot_id) +
+			                      "WHERE table_id = " +
+			                      tid + " AND snapshot_id = " + sid +
 			                      " ORDER BY row_order) "
-			                      "TO '" + checkpoint_file + "' (FORMAT PARQUET);";
+			                      "TO '" +
+			                      checkpoint_file + "' (FORMAT PARQUET);";
 			ExecuteSQL(context, copy_parquet);
 
 			// Write JSON commit log
 			string copy_json = "COPY (SELECT content FROM temp_checkpoint_json "
-			                   "WHERE table_id = " + std::to_string(table_id) +
-			                   " AND snapshot_id = " + std::to_string(snapshot_id) + ") "
-			                   "TO '" + json_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
+			                   "WHERE table_id = " +
+			                   tid + " AND snapshot_id = " + sid +
+			                   ") "
+			                   "TO '" +
+			                   json_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
 			ExecuteSQL(context, copy_json);
 
 			// Write _last_checkpoint
 			string copy_last = "COPY (SELECT content FROM temp_last_checkpoint "
-			                   "WHERE table_id = " + std::to_string(table_id) +
-			                   " AND snapshot_id = " + std::to_string(snapshot_id) + ") "
-			                   "TO '" + last_checkpoint_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
+			                   "WHERE table_id = " +
+			                   tid + " AND snapshot_id = " + sid +
+			                   ") "
+			                   "TO '" +
+			                   last_checkpoint_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
 			ExecuteSQL(context, copy_last);
 
 			// Log the export
 			string insert_log = "INSERT INTO ducklake_export_log (table_id, snapshot_id) "
-			                    "VALUES (" + std::to_string(table_id) + ", " + std::to_string(snapshot_id) + ");";
+			                    "VALUES (" +
+			                    tid + ", " + sid + ");";
 			ExecuteSQL(context, insert_log);
 
 			ExecuteSQL(context, "COMMIT;");
@@ -806,8 +818,7 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 //===--------------------------------------------------------------------===//
 
 static void LoadInternal(ExtensionLoader &loader) {
-	TableFunction delta_export_func("ducklake_export_delta", {LogicalType::VARCHAR}, DeltaExportScan,
-	                                DeltaExportBind);
+	TableFunction delta_export_func("ducklake_export_delta", {LogicalType::VARCHAR}, DeltaExportScan, DeltaExportBind);
 	delta_export_func.init_global = DeltaExportGlobalInit;
 	loader.RegisterFunction(delta_export_func);
 }
@@ -835,5 +846,4 @@ extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(delta_export, loader) {
 	duckdb::LoadInternal(loader);
 }
-
 }
