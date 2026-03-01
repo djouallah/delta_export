@@ -5,7 +5,6 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/function/table/table_function_set.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -566,12 +565,10 @@ static unique_ptr<QueryResult> ExecuteSQL(ClientContext &context, const string &
 }
 
 //===--------------------------------------------------------------------===//
-// Table Function: ducklake_export_delta
+// Table Function: export_delta
 //===--------------------------------------------------------------------===//
 
-struct DeltaExportBindData : public TableFunctionData {
-	string catalog_name; // catalog to export from (empty = use current database)
-};
+struct DeltaExportBindData : public TableFunctionData {};
 
 struct DeltaExportGlobalState : public GlobalTableFunctionState {
 	bool finished = false;
@@ -583,7 +580,8 @@ struct DeltaExportGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-static void DeltaExportBindOutput(vector<LogicalType> &return_types, vector<string> &names) {
+static unique_ptr<FunctionData> DeltaExportBind(ClientContext &context, TableFunctionBindInput &input,
+                                                vector<LogicalType> &return_types, vector<string> &names) {
 	names.emplace_back("table_name");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
@@ -598,24 +596,8 @@ static void DeltaExportBindOutput(vector<LogicalType> &return_types, vector<stri
 
 	names.emplace_back("message");
 	return_types.emplace_back(LogicalType::VARCHAR);
-}
 
-// Bind with catalog name argument: CALL ducklake_export_delta('my_catalog')
-static unique_ptr<FunctionData> DeltaExportBindWithCatalog(ClientContext &context, TableFunctionBindInput &input,
-                                                           vector<LogicalType> &return_types, vector<string> &names) {
-	auto bind_data = make_uniq<DeltaExportBindData>();
-	bind_data->catalog_name = input.inputs[0].GetValue<string>();
-	DeltaExportBindOutput(return_types, names);
-	return std::move(bind_data);
-}
-
-// Bind with no arguments: CALL ducklake_export_delta()
-static unique_ptr<FunctionData> DeltaExportBindDefault(ClientContext &context, TableFunctionBindInput &input,
-                                                       vector<LogicalType> &return_types, vector<string> &names) {
-	auto bind_data = make_uniq<DeltaExportBindData>();
-	// empty catalog_name means "use current database"
-	DeltaExportBindOutput(return_types, names);
-	return std::move(bind_data);
+	return make_uniq<DeltaExportBindData>();
 }
 
 static unique_ptr<GlobalTableFunctionState> DeltaExportGlobalInit(ClientContext &context,
@@ -625,7 +607,6 @@ static unique_ptr<GlobalTableFunctionState> DeltaExportGlobalInit(ClientContext 
 
 static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<DeltaExportGlobalState>();
-	auto &bind_data = data.bind_data->Cast<DeltaExportBindData>();
 
 	if (state.finished) {
 		output.SetCardinality(0);
@@ -650,142 +631,101 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		return;
 	}
 
-	// ── Step 1: Determine target catalog ──
-	string target_catalog = bind_data.catalog_name;
+	// ── Run export on the current database ──
 
-	// Save current database to restore later
-	string original_db;
-	try {
-		auto db_result = context.Query("SELECT current_database()", false);
-		if (!db_result->HasError()) {
-			auto &materialized = db_result->Cast<MaterializedQueryResult>();
-			if (materialized.RowCount() > 0) {
-				original_db = materialized.GetValue(0, 0).ToString();
-			}
-		}
-	} catch (...) {
-		// ignore
+	// Step 1: Create export tracking table
+	ExecuteSQL(context, SQL_CREATE_EXPORT_LOG);
+
+	// Step 2: Build export summary
+	ExecuteSQL(context, SQL_CREATE_EXPORT_SUMMARY);
+	ExecuteSQL(context, SQL_INSERT_EXPORT_SUMMARY);
+
+	// Step 3: Generate checkpoint parquet data
+	ExecuteSQL(context, SQL_CREATE_CHECKPOINT_PARQUET);
+
+	// Step 4: Generate JSON checkpoint
+	ExecuteSQL(context, SQL_CREATE_CHECKPOINT_JSON);
+
+	// Step 5: Generate last checkpoint
+	ExecuteSQL(context, SQL_CREATE_LAST_CHECKPOINT);
+
+	// Step 6: Build export paths
+	ExecuteSQL(context, SQL_CREATE_EXPORT_PATHS);
+
+	// Step 7: Create _delta_log directories for local paths
+	auto dirs_result = ExecuteSQL(context, SQL_GET_LOCAL_DIRS);
+	auto &dirs_materialized = dirs_result->Cast<MaterializedQueryResult>();
+	for (idx_t i = 0; i < dirs_materialized.RowCount(); i++) {
+		string dir_path = dirs_materialized.GetValue(0, i).ToString();
+		string create_dir_sql = "COPY (SELECT 1 AS id, 1 AS \".duckdb_init\") "
+		                        "TO '" +
+		                        dir_path +
+		                        "' "
+		                        "(FORMAT CSV, PARTITION_BY (\".duckdb_init\"), OVERWRITE_OR_IGNORE);";
+		ExecuteSQL(context, create_dir_sql);
 	}
 
-	// If no catalog specified, use the current database
-	if (target_catalog.empty()) {
-		target_catalog = original_db;
+	// Step 8: Export loop — unlimited tables
+	auto exports_result = ExecuteSQL(context, SQL_GET_EXPORTS);
+	auto &exports_materialized = exports_result->Cast<MaterializedQueryResult>();
+
+	for (idx_t i = 0; i < exports_materialized.RowCount(); i++) {
+		int64_t table_id = exports_materialized.GetValue(1, i).GetValue<int64_t>();
+		int64_t snapshot_id = exports_materialized.GetValue(3, i).GetValue<int64_t>();
+		string checkpoint_file = exports_materialized.GetValue(4, i).ToString();
+		string json_file = exports_materialized.GetValue(5, i).ToString();
+		string last_checkpoint_file = exports_materialized.GetValue(6, i).ToString();
+
+		ExecuteSQL(context, "BEGIN TRANSACTION;");
+
+		string tid = std::to_string(table_id);
+		string sid = std::to_string(snapshot_id);
+
+		string copy_parquet = "COPY (SELECT protocol, metaData, add, remove, commitInfo "
+		                      "FROM temp_checkpoint_parquet "
+		                      "WHERE table_id = " +
+		                      tid + " AND snapshot_id = " + sid +
+		                      " ORDER BY row_order) "
+		                      "TO '" +
+		                      checkpoint_file + "' (FORMAT PARQUET);";
+		ExecuteSQL(context, copy_parquet);
+
+		string copy_json = "COPY (SELECT content FROM temp_checkpoint_json "
+		                   "WHERE table_id = " +
+		                   tid + " AND snapshot_id = " + sid +
+		                   ") "
+		                   "TO '" +
+		                   json_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
+		ExecuteSQL(context, copy_json);
+
+		string copy_last = "COPY (SELECT content FROM temp_last_checkpoint "
+		                   "WHERE table_id = " +
+		                   tid + " AND snapshot_id = " + sid +
+		                   ") "
+		                   "TO '" +
+		                   last_checkpoint_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
+		ExecuteSQL(context, copy_last);
+
+		string insert_log = "INSERT INTO ducklake_export_log (table_id, snapshot_id) "
+		                    "VALUES (" +
+		                    tid + ", " + sid + ");";
+		ExecuteSQL(context, insert_log);
+
+		ExecuteSQL(context, "COMMIT;");
 	}
 
-	try {
-		// ── Step 2: Switch to target catalog ──
-		ExecuteSQL(context, "USE " + target_catalog + ";");
+	// Step 9: Collect and return results
+	auto summary_result = ExecuteSQL(context, SQL_GET_EXPORT_SUMMARY);
+	auto &summary_materialized = summary_result->Cast<MaterializedQueryResult>();
 
-		// ── Step 3: Create export tracking table ──
-		ExecuteSQL(context, SQL_CREATE_EXPORT_LOG);
-
-		// ── Step 4: Build export summary ──
-		ExecuteSQL(context, SQL_CREATE_EXPORT_SUMMARY);
-		ExecuteSQL(context, SQL_INSERT_EXPORT_SUMMARY);
-
-		// ── Step 5: Generate checkpoint parquet data ──
-		ExecuteSQL(context, SQL_CREATE_CHECKPOINT_PARQUET);
-
-		// ── Step 6: Generate JSON checkpoint ──
-		ExecuteSQL(context, SQL_CREATE_CHECKPOINT_JSON);
-
-		// ── Step 7: Generate last checkpoint ──
-		ExecuteSQL(context, SQL_CREATE_LAST_CHECKPOINT);
-
-		// ── Step 8: Build export paths ──
-		ExecuteSQL(context, SQL_CREATE_EXPORT_PATHS);
-
-		// ── Step 9: Create _delta_log directories for local paths ──
-		auto dirs_result = ExecuteSQL(context, SQL_GET_LOCAL_DIRS);
-		auto &dirs_materialized = dirs_result->Cast<MaterializedQueryResult>();
-		for (idx_t i = 0; i < dirs_materialized.RowCount(); i++) {
-			string dir_path = dirs_materialized.GetValue(0, i).ToString();
-			string create_dir_sql = "COPY (SELECT 1 AS id, 1 AS \".duckdb_init\") "
-			                        "TO '" +
-			                        dir_path +
-			                        "' "
-			                        "(FORMAT CSV, PARTITION_BY (\".duckdb_init\"), OVERWRITE_OR_IGNORE);";
-			ExecuteSQL(context, create_dir_sql);
-		}
-
-		// ── Step 10: Export loop — unlimited tables ──
-		auto exports_result = ExecuteSQL(context, SQL_GET_EXPORTS);
-		auto &exports_materialized = exports_result->Cast<MaterializedQueryResult>();
-
-		for (idx_t i = 0; i < exports_materialized.RowCount(); i++) {
-			int64_t table_id = exports_materialized.GetValue(1, i).GetValue<int64_t>();
-			int64_t snapshot_id = exports_materialized.GetValue(3, i).GetValue<int64_t>();
-			string checkpoint_file = exports_materialized.GetValue(4, i).ToString();
-			string json_file = exports_materialized.GetValue(5, i).ToString();
-			string last_checkpoint_file = exports_materialized.GetValue(6, i).ToString();
-
-			ExecuteSQL(context, "BEGIN TRANSACTION;");
-
-			// Write checkpoint parquet
-			string tid = std::to_string(table_id);
-			string sid = std::to_string(snapshot_id);
-
-			string copy_parquet = "COPY (SELECT protocol, metaData, add, remove, commitInfo "
-			                      "FROM temp_checkpoint_parquet "
-			                      "WHERE table_id = " +
-			                      tid + " AND snapshot_id = " + sid +
-			                      " ORDER BY row_order) "
-			                      "TO '" +
-			                      checkpoint_file + "' (FORMAT PARQUET);";
-			ExecuteSQL(context, copy_parquet);
-
-			// Write JSON commit log
-			string copy_json = "COPY (SELECT content FROM temp_checkpoint_json "
-			                   "WHERE table_id = " +
-			                   tid + " AND snapshot_id = " + sid +
-			                   ") "
-			                   "TO '" +
-			                   json_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
-			ExecuteSQL(context, copy_json);
-
-			// Write _last_checkpoint
-			string copy_last = "COPY (SELECT content FROM temp_last_checkpoint "
-			                   "WHERE table_id = " +
-			                   tid + " AND snapshot_id = " + sid +
-			                   ") "
-			                   "TO '" +
-			                   last_checkpoint_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
-			ExecuteSQL(context, copy_last);
-
-			// Log the export
-			string insert_log = "INSERT INTO ducklake_export_log (table_id, snapshot_id) "
-			                    "VALUES (" +
-			                    tid + ", " + sid + ");";
-			ExecuteSQL(context, insert_log);
-
-			ExecuteSQL(context, "COMMIT;");
-		}
-
-		// ── Step 11: Collect and return results ──
-		auto summary_result = ExecuteSQL(context, SQL_GET_EXPORT_SUMMARY);
-		auto &summary_materialized = summary_result->Cast<MaterializedQueryResult>();
-
-		for (idx_t i = 0; i < summary_materialized.RowCount(); i++) {
-			vector<Value> row;
-			row.push_back(summary_materialized.GetValue(0, i)); // table_name
-			row.push_back(summary_materialized.GetValue(1, i)); // status
-			row.push_back(summary_materialized.GetValue(2, i)); // data_snapshot
-			row.push_back(summary_materialized.GetValue(3, i)); // explanation
-			row.push_back(summary_materialized.GetValue(4, i)); // message
-			state.rows.push_back(std::move(row));
-		}
-
-	} catch (...) {
-		// Restore original database before re-throwing
-		if (!original_db.empty()) {
-			context.Query("USE " + original_db + ";", false);
-		}
-		throw;
-	}
-
-	// ── Step 12: Restore original database ──
-	if (!original_db.empty()) {
-		context.Query("USE " + original_db + ";", false);
+	for (idx_t i = 0; i < summary_materialized.RowCount(); i++) {
+		vector<Value> row;
+		row.push_back(summary_materialized.GetValue(0, i));
+		row.push_back(summary_materialized.GetValue(1, i));
+		row.push_back(summary_materialized.GetValue(2, i));
+		row.push_back(summary_materialized.GetValue(3, i));
+		row.push_back(summary_materialized.GetValue(4, i));
+		state.rows.push_back(std::move(row));
 	}
 
 	// Emit first batch of rows
@@ -810,19 +750,9 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 //===--------------------------------------------------------------------===//
 
 static void LoadInternal(ExtensionLoader &loader) {
-	// CALL ducklake_export_delta() — uses current database
-	TableFunction no_args("ducklake_export_delta", {}, DeltaExportScan, DeltaExportBindDefault);
-	no_args.init_global = DeltaExportGlobalInit;
-
-	// CALL ducklake_export_delta('my_catalog') — uses specified catalog
-	TableFunction with_catalog("ducklake_export_delta", {LogicalType::VARCHAR}, DeltaExportScan,
-	                           DeltaExportBindWithCatalog);
-	with_catalog.init_global = DeltaExportGlobalInit;
-
-	TableFunctionSet func_set("ducklake_export_delta");
-	func_set.AddFunction(no_args);
-	func_set.AddFunction(with_catalog);
-	loader.RegisterFunction(func_set);
+	TableFunction func("export_delta", {}, DeltaExportScan, DeltaExportBind);
+	func.init_global = DeltaExportGlobalInit;
+	loader.RegisterFunction(func);
 }
 
 void DeltaExportExtension::Load(ExtensionLoader &loader) {
