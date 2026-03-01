@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/function/table/table_function_set.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -569,7 +570,7 @@ static unique_ptr<QueryResult> ExecuteSQL(ClientContext &context, const string &
 //===--------------------------------------------------------------------===//
 
 struct DeltaExportBindData : public TableFunctionData {
-	string metadata_db_path;
+	string catalog_name; // catalog to export from (empty = use current database)
 };
 
 struct DeltaExportGlobalState : public GlobalTableFunctionState {
@@ -582,11 +583,7 @@ struct DeltaExportGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-static unique_ptr<FunctionData> DeltaExportBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
-	auto bind_data = make_uniq<DeltaExportBindData>();
-	bind_data->metadata_db_path = input.inputs[0].GetValue<string>();
-
+static void DeltaExportBindOutput(vector<LogicalType> &return_types, vector<string> &names) {
 	names.emplace_back("table_name");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
@@ -601,7 +598,23 @@ static unique_ptr<FunctionData> DeltaExportBind(ClientContext &context, TableFun
 
 	names.emplace_back("message");
 	return_types.emplace_back(LogicalType::VARCHAR);
+}
 
+// Bind with catalog name argument: CALL ducklake_export_delta('my_catalog')
+static unique_ptr<FunctionData> DeltaExportBindWithCatalog(ClientContext &context, TableFunctionBindInput &input,
+                                                           vector<LogicalType> &return_types, vector<string> &names) {
+	auto bind_data = make_uniq<DeltaExportBindData>();
+	bind_data->catalog_name = input.inputs[0].GetValue<string>();
+	DeltaExportBindOutput(return_types, names);
+	return std::move(bind_data);
+}
+
+// Bind with no arguments: CALL ducklake_export_delta()
+static unique_ptr<FunctionData> DeltaExportBindDefault(ClientContext &context, TableFunctionBindInput &input,
+                                                       vector<LogicalType> &return_types, vector<string> &names) {
+	auto bind_data = make_uniq<DeltaExportBindData>();
+	// empty catalog_name means "use current database"
+	DeltaExportBindOutput(return_types, names);
 	return std::move(bind_data);
 }
 
@@ -637,28 +650,8 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		return;
 	}
 
-	// ── Step 1: Attach the metadata database ──
-	string db_path = bind_data.metadata_db_path;
-	string attach_name = "__ducklake_metadata_dwh";
-
-	// Check if already attached (user may have it open already)
-	bool already_attached = false;
-	try {
-		auto check = context.Query(
-		    "SELECT 1 FROM information_schema.schemata WHERE catalog_name = '" + attach_name + "' LIMIT 1", false);
-		if (!check->HasError()) {
-			auto materialized = check->Cast<MaterializedQueryResult>();
-			if (materialized.RowCount() > 0) {
-				already_attached = true;
-			}
-		}
-	} catch (...) {
-		// Not attached
-	}
-
-	if (!already_attached) {
-		ExecuteSQL(context, "ATTACH '" + db_path + "' AS " + attach_name + ";");
-	}
+	// ── Step 1: Determine target catalog ──
+	string target_catalog = bind_data.catalog_name;
 
 	// Save current database to restore later
 	string original_db;
@@ -674,9 +667,14 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		// ignore
 	}
 
+	// If no catalog specified, use the current database
+	if (target_catalog.empty()) {
+		target_catalog = original_db;
+	}
+
 	try {
-		// ── Step 2: Switch to metadata database ──
-		ExecuteSQL(context, "USE " + attach_name + ";");
+		// ── Step 2: Switch to target catalog ──
+		ExecuteSQL(context, "USE " + target_catalog + ";");
 
 		// ── Step 3: Create export tracking table ──
 		ExecuteSQL(context, SQL_CREATE_EXPORT_LOG);
@@ -782,18 +780,12 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		if (!original_db.empty()) {
 			context.Query("USE " + original_db + ";", false);
 		}
-		if (!already_attached) {
-			context.Query("DETACH " + attach_name + ";", false);
-		}
 		throw;
 	}
 
-	// ── Step 12: Cleanup — restore original database ──
+	// ── Step 12: Restore original database ──
 	if (!original_db.empty()) {
 		context.Query("USE " + original_db + ";", false);
-	}
-	if (!already_attached) {
-		context.Query("DETACH " + attach_name + ";", false);
 	}
 
 	// Emit first batch of rows
@@ -818,9 +810,19 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 //===--------------------------------------------------------------------===//
 
 static void LoadInternal(ExtensionLoader &loader) {
-	TableFunction delta_export_func("ducklake_export_delta", {LogicalType::VARCHAR}, DeltaExportScan, DeltaExportBind);
-	delta_export_func.init_global = DeltaExportGlobalInit;
-	loader.RegisterFunction(delta_export_func);
+	// CALL ducklake_export_delta() — uses current database
+	TableFunction no_args("ducklake_export_delta", {}, DeltaExportScan, DeltaExportBindDefault);
+	no_args.init_global = DeltaExportGlobalInit;
+
+	// CALL ducklake_export_delta('my_catalog') — uses specified catalog
+	TableFunction with_catalog("ducklake_export_delta", {LogicalType::VARCHAR}, DeltaExportScan,
+	                           DeltaExportBindWithCatalog);
+	with_catalog.init_global = DeltaExportGlobalInit;
+
+	TableFunctionSet func_set("ducklake_export_delta");
+	func_set.AddFunction(no_args);
+	func_set.AddFunction(with_catalog);
+	loader.RegisterFunction(func_set);
 }
 
 void DeltaExportExtension::Load(ExtensionLoader &loader) {

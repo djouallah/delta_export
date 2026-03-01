@@ -14,17 +14,21 @@ repo:
 
 docs:
   hello_world: |
-    CALL ducklake_export_delta('/path/to/ducklake_metadata.db');
+    CALL ducklake_export_delta();
   extended_description: |
     The `delta_export` extension exports Delta Lake metadata (checkpoint parquet files,
-    JSON commit logs, and `_last_checkpoint` files) from a DuckLake metadata database.
+    JSON commit logs, and `_last_checkpoint` files) from a DuckLake catalog database.
 
     This enables DuckLake-managed tables to be consumed by Delta Lake readers such as
     Power BI DirectLake, Apache Spark, and other tools that understand the Delta protocol.
 
     Usage:
     ```sql
-    CALL ducklake_export_delta('path/to/ducklake_metadata.db');
+    -- Export from the current database
+    CALL ducklake_export_delta();
+
+    -- Export from a specific catalog
+    CALL ducklake_export_delta('my_ducklake_catalog');
     ```
 
     The function returns a summary table showing the export status of each table:
