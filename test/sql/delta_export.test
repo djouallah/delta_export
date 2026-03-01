@@ -1,0 +1,10 @@
+# name: test/sql/delta_export.test
+# group: [delta_export]
+
+# Require the extension to be loaded
+require delta_export
+
+# Test that the function exists and is callable
+statement error
+CALL ducklake_export_delta('nonexistent_path.db');
+----
