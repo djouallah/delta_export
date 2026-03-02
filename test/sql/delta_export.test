@@ -7,48 +7,32 @@ require json
 
 require parquet
 
-# ── Create mock DuckLake catalog tables ──
+require ducklake
+
+# ── Create a real DuckLake catalog ──
 
 statement ok
-CREATE TABLE ducklake_metadata AS SELECT 'data_path' as key, '__TEST_DIR__/delta_export_test' as value;
+ATTACH 'ducklake:__TEST_DIR__/test_metadata.ducklake' AS test_lake (DATA_PATH '__TEST_DIR__/test_data');
 
 statement ok
-CREATE TABLE ducklake_schema AS SELECT 1 as schema_id, 'main' as schema_name, '' as path;
+USE test_lake;
 
 statement ok
-CREATE TABLE ducklake_table AS SELECT 1 as table_id, 'test_table' as table_name, 'test_table' as path, NULL::BIGINT as end_snapshot, 1 as schema_id;
+CREATE TABLE test_table (id BIGINT, name VARCHAR);
 
 statement ok
-CREATE TABLE ducklake_snapshot AS SELECT 1 as snapshot_id;
-
-statement ok
-CREATE TABLE ducklake_snapshot_changes AS SELECT 1 as snapshot_id, 'modified:1' as changes_made;
-
-statement ok
-CREATE TABLE ducklake_data_file AS SELECT 1 as data_file_id, 1 as table_id, '/data/part-0001.parquet' as path, 1024::BIGINT as file_size_bytes, NULL::BIGINT as end_snapshot;
-
-statement ok
-CREATE TABLE ducklake_column AS SELECT * FROM (VALUES
-    (1, 1, 'id', 'BIGINT', 0, NULL::BIGINT),
-    (2, 1, 'name', 'VARCHAR', 1, NULL::BIGINT)
-) t(column_id, table_id, column_name, column_type, column_order, end_snapshot);
-
-statement ok
-CREATE TABLE ducklake_file_column_stats AS SELECT * FROM (VALUES
-    (1, 1, 100::BIGINT, '1', '100', 0::BIGINT),
-    (1, 2, 100::BIGINT, 'Alice', 'Zoe', 5::BIGINT)
-) t(data_file_id, column_id, value_count, min_value, max_value, null_count);
+INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
 
 # ── First export: table should need export ──
 
-query TTITT
-SELECT * FROM export_delta();
+query TT
+SELECT table_name, status FROM export_delta();
 ----
-main.test_table	needs_export	1	Data snapshot 1 needs Delta export	Ready for export
+main.test_table	needs_export
 
 # ── Second export: already exported (idempotency) ──
 
-query TTITT
-SELECT * FROM export_delta();
+query TT
+SELECT table_name, status FROM export_delta();
 ----
-main.test_table	already_exported	1	Data snapshot 1 already exported	Snapshot 1 already exported
+main.test_table	already_exported

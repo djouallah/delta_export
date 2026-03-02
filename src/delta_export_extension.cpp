@@ -636,7 +636,10 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	Connection conn(*context.db);
 	auto &default_db = DatabaseManager::GetDefaultDatabase(context);
 	if (!default_db.empty()) {
-		conn.Query("USE \"" + default_db + "\"");
+		// Switch to the DuckLake internal metadata database (regular DuckDB),
+		// not the DuckLake catalog itself. This is where ducklake_metadata,
+		// ducklake_table etc. live, and where ducklake_export_log is created.
+		conn.Query("USE \"__ducklake_metadata_" + default_db + "\"");
 	}
 
 	// Step 1: Create export tracking table
