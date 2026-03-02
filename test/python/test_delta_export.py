@@ -83,25 +83,37 @@ def test_multiple_tables(conn):
 
 
 def test_roundtrip_data(ducklake_env):
-    """Exported Delta table should have the same row count as the DuckLake source."""
+    """After complex transactions, exported Delta should match DuckLake row count."""
     conn, data_path = ducklake_env
     conn.execute("CREATE TABLE sales (id BIGINT, amount DOUBLE, region VARCHAR)")
+
+    # Bulk insert
     conn.execute(
-        "INSERT INTO sales VALUES (1, 10.0, 'US'), (2, 20.0, 'EU'), (3, 30.0, 'US')"
+        "INSERT INTO sales VALUES "
+        "(1, 10.0, 'US'), (2, 20.0, 'EU'), (3, 30.0, 'US'), "
+        "(4, 40.0, 'APAC'), (5, 50.0, 'EU'), (6, 60.0, 'US')"
     )
+    # Update some rows
+    conn.execute("UPDATE sales SET amount = amount * 1.1 WHERE region = 'EU'")
+    # Delete a row
+    conn.execute("DELETE FROM sales WHERE id = 4")
+    # Insert more
+    conn.execute("INSERT INTO sales VALUES (7, 70.0, 'APAC'), (8, 80.0, 'US')")
+    # Another update
+    conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
+
+    # Export once at the end
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
-
-    # The delta table root is the parent of _delta_log
     delta_table_root = os.path.dirname(delta_log)
 
-    # Compare count(*) from DuckLake vs delta_scan
     ducklake_count = conn.execute("SELECT count(*) FROM sales").fetchone()[0]
     delta_count = conn.execute(
         f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
     ).fetchone()[0]
-    assert ducklake_count == delta_count == 3, (
-        f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}, expected=3"
+    print(f"DuckLake count: {ducklake_count}, Delta count: {delta_count}")
+    assert ducklake_count == delta_count, (
+        f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
     )

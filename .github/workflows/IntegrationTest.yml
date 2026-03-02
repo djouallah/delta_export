@@ -45,6 +45,6 @@ jobs:
 
       - run: pip install duckdb==1.4.4 pytest
 
-      - run: pytest test/python/ -v -s
+      - run: pytest test/python/ -v -s --tb=long
         env:
           DELTA_EXPORT_EXTENSION_PATH: ./artifact/delta_export.duckdb_extension
