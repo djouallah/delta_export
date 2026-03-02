@@ -14,7 +14,7 @@ repo:
 
 docs:
   hello_world: |
-    CALL export_delta();
+    CALL delta_export();
   extended_description: |
     The `delta_export` extension exports Delta Lake metadata (checkpoint parquet files,
     JSON commit logs, and `_last_checkpoint` files) from a DuckLake catalog database.
@@ -25,7 +25,7 @@ docs:
     Usage:
     ```sql
     USE my_catalog;
-    CALL export_delta();
+    CALL delta_export();
     ```
 
     The function returns a summary table showing the export status of each table:

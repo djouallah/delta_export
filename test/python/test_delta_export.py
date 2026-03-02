@@ -16,7 +16,7 @@ def test_export_needs_export(conn):
     """First export should return needs_export status."""
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
-    rows = conn.execute("SELECT * FROM export_delta()").fetchall()
+    rows = conn.execute("SELECT * FROM delta_export()").fetchall()
     assert len(rows) == 1
     table_name, status, snapshot, explanation, message = rows[0]
     assert table_name == "main.test_table"
@@ -27,8 +27,8 @@ def test_export_idempotent(conn):
     """Second export should return already_exported status."""
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
-    conn.execute("SELECT * FROM export_delta()").fetchall()
-    rows = conn.execute("SELECT * FROM export_delta()").fetchall()
+    conn.execute("SELECT * FROM delta_export()").fetchall()
+    rows = conn.execute("SELECT * FROM delta_export()").fetchall()
     assert len(rows) == 1
     assert rows[0][1] == "already_exported"
 
@@ -38,7 +38,7 @@ def test_export_creates_delta_files(ducklake_env):
     conn, data_path = ducklake_env
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
-    conn.execute("SELECT * FROM export_delta()").fetchall()
+    conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
@@ -54,7 +54,7 @@ def test_checkpoint_parquet_readable(ducklake_env):
     conn, data_path = ducklake_env
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
-    conn.execute("SELECT * FROM export_delta()").fetchall()
+    conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
@@ -73,7 +73,7 @@ def test_multiple_tables(conn):
     conn.execute("INSERT INTO orders VALUES (1, 99.99), (2, 149.50)")
     conn.execute("CREATE TABLE customers (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')")
-    rows = conn.execute("SELECT * FROM export_delta() ORDER BY table_name").fetchall()
+    rows = conn.execute("SELECT * FROM delta_export() ORDER BY table_name").fetchall()
     assert len(rows) == 2
     names = [r[0] for r in rows]
     assert "main.customers" in names
@@ -101,8 +101,8 @@ def test_roundtrip_data(ducklake_env):
     # Another update
     conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
 
-    # export_delta() internally flushes inlined data and rewrites files with deletes
-    conn.execute("SELECT * FROM export_delta()").fetchall()
+    # delta_export() internally flushes inlined data and rewrites files with deletes
+    conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
@@ -129,8 +129,8 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
 
     # Enable data inlining so small inserts go to metadata instead of parquet
     conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 10)")
-    # export_delta() internally flushes inlined data and rewrites files with deletes
-    conn.execute("SELECT * FROM export_delta()").fetchall()
+    # delta_export() internally flushes inlined data and rewrites files with deletes
+    conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
@@ -164,7 +164,7 @@ def test_data_type_mappings(ducklake_env):
         "INSERT INTO typed_table VALUES "
         "(1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '\\x0102'::BLOB, '2024-01-01', '2024-01-01 12:00:00')"
     )
-    conn.execute("SELECT * FROM export_delta()").fetchall()
+    conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"

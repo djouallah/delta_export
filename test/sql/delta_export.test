@@ -28,14 +28,14 @@ INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
 # ── First export: table should need export ──
 
 query TT
-SELECT table_name, status FROM export_delta();
+SELECT table_name, status FROM delta_export();
 ----
 main.test_table	needs_export
 
 # ── Second export: already exported (idempotency) ──
 
 query TT
-SELECT table_name, status FROM export_delta();
+SELECT table_name, status FROM delta_export();
 ----
 main.test_table	already_exported
 
@@ -59,10 +59,10 @@ INSERT INTO sales VALUES (7, 70.0, 'APAC'), (8, 80.0, 'US');
 statement ok
 UPDATE sales SET region = 'NA' WHERE region = 'US';
 
-# export_delta() flushes inlined data and rewrites files with deletes internally
+# delta_export() flushes inlined data and rewrites files with deletes internally
 
 query TT
-SELECT table_name, status FROM export_delta() WHERE table_name = 'main.sales';
+SELECT table_name, status FROM delta_export() WHERE table_name = 'main.sales';
 ----
 main.sales	needs_export
 
@@ -91,7 +91,7 @@ statement ok
 INSERT INTO products VALUES (4, 'Doohickey', 39.99);
 
 query TT
-SELECT table_name, status FROM export_delta() WHERE table_name = 'main.products';
+SELECT table_name, status FROM delta_export() WHERE table_name = 'main.products';
 ----
 main.products	needs_export
 
@@ -109,7 +109,7 @@ statement ok
 INSERT INTO typed_table VALUES (1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '2024-01-01', '2024-01-01 12:00:00');
 
 query TT
-SELECT table_name, status FROM export_delta() WHERE table_name = 'main.typed_table';
+SELECT table_name, status FROM delta_export() WHERE table_name = 'main.typed_table';
 ----
 main.typed_table	needs_export
 

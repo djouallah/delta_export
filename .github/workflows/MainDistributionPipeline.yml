@@ -25,3 +25,40 @@ jobs:
       duckdb_version: v1.4.4
       ci_tools_version: v1.4.4
       extension_name: delta_export
+
+  publish-to-github:
+    name: Publish to GitHub Release
+    needs: [duckdb-stable-build, code-quality-check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.4.4
+          name: delta_export v1.4.4 (DuckDB v1.4.4)
+          body: |
+            DuckDB extension that exports DuckLake catalog tables to Delta Lake format.
+
+            ## Install
+            ```sql
+            SET allow_unsigned_extensions = true;
+            INSTALL delta_export FROM 'https://github.com/djouallah/delta_export/releases/download/v1.4.4';
+            LOAD delta_export;
+            ```
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*.duckdb_extension.gz
+          make_latest: true

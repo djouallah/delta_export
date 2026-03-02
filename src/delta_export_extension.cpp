@@ -574,7 +574,7 @@ static unique_ptr<MaterializedQueryResult> ExecuteSQL(Connection &conn, const st
 }
 
 //===--------------------------------------------------------------------===//
-// Table Function: export_delta
+// Table Function: delta_export
 //===--------------------------------------------------------------------===//
 
 struct DeltaExportBindData : public TableFunctionData {};
@@ -769,7 +769,7 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 //===--------------------------------------------------------------------===//
 
 static void LoadInternal(ExtensionLoader &loader) {
-	TableFunction func("export_delta", {}, DeltaExportScan, DeltaExportBind);
+	TableFunction func("delta_export", {}, DeltaExportScan, DeltaExportBind);
 	func.init_global = DeltaExportGlobalInit;
 	loader.RegisterFunction(func);
 }
