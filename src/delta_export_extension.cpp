@@ -138,14 +138,22 @@ table_schemas AS (
             'name': c.column_name,
             'type':
                 CASE
-                    WHEN contains(lower(c.column_type), 'int') AND contains(c.column_type, '64') THEN 'long'
-                    WHEN contains(lower(c.column_type), 'int') THEN 'integer'
-                    WHEN contains(lower(c.column_type), 'float') THEN 'double'
-                    WHEN contains(lower(c.column_type), 'double') THEN 'double'
-                    WHEN contains(lower(c.column_type), 'bool') THEN 'boolean'
-                    WHEN contains(lower(c.column_type), 'timestamp') THEN 'timestamp'
-                    WHEN contains(lower(c.column_type), 'date') THEN 'date'
+                    WHEN lower(c.column_type) = 'tinyint' THEN 'byte'
+                    WHEN lower(c.column_type) = 'smallint' THEN 'short'
+                    WHEN lower(c.column_type) IN ('integer', 'int') THEN 'integer'
+                    WHEN lower(c.column_type) = 'bigint' THEN 'long'
+                    WHEN lower(c.column_type) = 'hugeint' THEN 'string'
+                    WHEN lower(c.column_type) = 'utinyint' THEN 'short'
+                    WHEN lower(c.column_type) = 'usmallint' THEN 'integer'
+                    WHEN lower(c.column_type) = 'uinteger' THEN 'long'
+                    WHEN lower(c.column_type) = 'ubigint' THEN 'string'
+                    WHEN lower(c.column_type) = 'float' THEN 'float'
+                    WHEN lower(c.column_type) = 'double' THEN 'double'
+                    WHEN lower(c.column_type) = 'boolean' THEN 'boolean'
                     WHEN contains(lower(c.column_type), 'decimal') THEN lower(c.column_type)
+                    WHEN contains(lower(c.column_type), 'timestamp') THEN 'timestamp'
+                    WHEN lower(c.column_type) = 'date' THEN 'date'
+                    WHEN lower(c.column_type) = 'blob' THEN 'binary'
                     ELSE 'string'
                 END,
             'nullable': true,
@@ -640,6 +648,13 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		// not the DuckLake catalog itself. This is where ducklake_metadata,
 		// ducklake_table etc. live, and where ducklake_export_log is created.
 		conn.Query("USE \"__ducklake_metadata_" + default_db + "\"");
+	}
+
+	// Step 0: Flush inlined data and rewrite files with deletes so parquet files are accurate
+	if (!default_db.empty()) {
+		ExecuteSQL(conn, "CALL \"" + default_db + "\".set_option('rewrite_delete_threshold', 0)");
+		ExecuteSQL(conn, "CALL ducklake_flush_inlined_data('" + default_db + "')");
+		ExecuteSQL(conn, "CALL ducklake_rewrite_data_files('" + default_db + "')");
 	}
 
 	// Step 1: Create export tracking table

@@ -1,5 +1,6 @@
 """Integration tests for the delta_export extension using a real DuckLake catalog."""
 
+import json
 import os
 
 
@@ -102,10 +103,7 @@ def test_roundtrip_data(ducklake_env):
     # Another update
     conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
 
-    # Force checkpoint to rewrite all files with any deletes and flush inlined data
-    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
-    conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 0)")
-    conn.execute("CHECKPOINT")
+    # export_delta() internally flushes inlined data and rewrites files with deletes
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -135,10 +133,9 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
     conn.execute("DELETE FROM products WHERE id = 2")
     conn.execute("INSERT INTO products VALUES (6, 'Contraption', 59.99)")
 
-    # Enable data inlining so small inserts go to metadata, then flush on checkpoint
+    # Enable data inlining so small inserts go to metadata instead of parquet
     conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 10)")
-    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
-    conn.execute("CHECKPOINT")
+    # export_delta() internally flushes inlined data and rewrites files with deletes
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -153,3 +150,62 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
     assert ducklake_count == delta_count, (
         f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
     )
+
+
+def test_data_type_mappings(ducklake_env):
+    """Verify DuckDB types are correctly mapped to Delta Lake types in the schema."""
+    conn, data_path = ducklake_env
+    conn.execute(
+        "CREATE TABLE typed_table ("
+        "  col_tinyint TINYINT,"
+        "  col_smallint SMALLINT,"
+        "  col_integer INTEGER,"
+        "  col_bigint BIGINT,"
+        "  col_float FLOAT,"
+        "  col_double DOUBLE,"
+        "  col_boolean BOOLEAN,"
+        "  col_varchar VARCHAR,"
+        "  col_blob BLOB,"
+        "  col_date DATE,"
+        "  col_timestamp TIMESTAMP"
+        ")"
+    )
+    conn.execute(
+        "INSERT INTO typed_table VALUES "
+        "(1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '\\x0102'::BLOB, '2024-01-01', '2024-01-01 12:00:00')"
+    )
+    conn.execute("SELECT * FROM export_delta()").fetchall()
+
+    delta_log = _find_delta_log(data_path)
+    assert delta_log is not None, f"_delta_log not found under {data_path}"
+
+    # Read the checkpoint parquet and extract the metaData schemaString
+    parquet_files = [f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")]
+    parquet_path = os.path.join(delta_log, parquet_files[0])
+    rows = conn.execute(
+        f"SELECT metaData.schemaString FROM read_parquet('{parquet_path}') WHERE metaData IS NOT NULL"
+    ).fetchall()
+    assert len(rows) == 1, f"Expected 1 metaData row, got {len(rows)}"
+
+    schema = json.loads(rows[0][0])
+    fields = {f["name"]: f["type"] for f in schema["fields"]}
+    print(f"Schema fields: {fields}")
+
+    assert fields["col_tinyint"] == "byte", f"TINYINT should map to byte, got {fields['col_tinyint']}"
+    assert fields["col_smallint"] == "short", f"SMALLINT should map to short, got {fields['col_smallint']}"
+    assert fields["col_integer"] == "integer", f"INTEGER should map to integer, got {fields['col_integer']}"
+    assert fields["col_bigint"] == "long", f"BIGINT should map to long, got {fields['col_bigint']}"
+    assert fields["col_float"] == "float", f"FLOAT should map to float, got {fields['col_float']}"
+    assert fields["col_double"] == "double", f"DOUBLE should map to double, got {fields['col_double']}"
+    assert fields["col_boolean"] == "boolean", f"BOOLEAN should map to boolean, got {fields['col_boolean']}"
+    assert fields["col_varchar"] == "string", f"VARCHAR should map to string, got {fields['col_varchar']}"
+    assert fields["col_blob"] == "binary", f"BLOB should map to binary, got {fields['col_blob']}"
+    assert fields["col_date"] == "date", f"DATE should map to date, got {fields['col_date']}"
+    assert fields["col_timestamp"] == "timestamp", f"TIMESTAMP should map to timestamp, got {fields['col_timestamp']}"
+
+    # Also verify delta_scan can read the data back
+    delta_table_root = os.path.dirname(delta_log)
+    delta_count = conn.execute(
+        f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
+    ).fetchone()[0]
+    assert delta_count == 1, f"Expected 1 row from delta_scan, got {delta_count}"
