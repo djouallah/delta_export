@@ -1,7 +1,17 @@
 name: Linux Build
 on:
   push:
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - 'extension_config.cmake'
   pull_request:
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - 'extension_config.cmake'
   workflow_dispatch:
 
 concurrency:

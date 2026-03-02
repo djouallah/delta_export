@@ -4,12 +4,18 @@ on:
     workflows: ["Linux Build"]
     types: [completed]
     branches: [main]
+  push:
+    paths:
+      - 'test/python/**'
   workflow_dispatch:
+
+permissions:
+  actions: read
 
 jobs:
   python-tests:
     name: Python tests
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
