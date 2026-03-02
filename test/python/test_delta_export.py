@@ -3,6 +3,14 @@
 import os
 
 
+def _find_delta_log(data_path):
+    """Walk data_path to find the _delta_log directory."""
+    for root, dirs, files in os.walk(data_path):
+        if "_delta_log" in dirs:
+            return os.path.join(root, "_delta_log")
+    return None
+
+
 def test_export_needs_export(conn):
     """First export should return needs_export status."""
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
@@ -31,8 +39,8 @@ def test_export_creates_delta_files(ducklake_env):
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
-    delta_log = os.path.join(data_path, "test_table", "_delta_log")
-    assert os.path.isdir(delta_log), f"_delta_log directory not created at {delta_log}"
+    delta_log = _find_delta_log(data_path)
+    assert delta_log is not None, f"_delta_log not found under {data_path}"
 
     files = os.listdir(delta_log)
     assert any(f.endswith(".checkpoint.parquet") for f in files), f"No checkpoint parquet in {files}"
@@ -47,7 +55,8 @@ def test_checkpoint_parquet_readable(ducklake_env):
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
-    delta_log = os.path.join(data_path, "test_table", "_delta_log")
+    delta_log = _find_delta_log(data_path)
+    assert delta_log is not None, f"_delta_log not found under {data_path}"
     parquet_files = [f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")]
     parquet_path = os.path.join(delta_log, parquet_files[0])
 
