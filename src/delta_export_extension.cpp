@@ -4,6 +4,8 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database_manager.hpp"
 
 namespace duckdb {
 
@@ -553,8 +555,8 @@ ORDER BY
 //===--------------------------------------------------------------------===//
 // Helper: Execute SQL and throw on error
 //===--------------------------------------------------------------------===//
-static unique_ptr<QueryResult> ExecuteSQL(ClientContext &context, const string &sql) {
-	auto result = context.Query(sql, false);
+static unique_ptr<MaterializedQueryResult> ExecuteSQL(Connection &conn, const string &sql) {
+	auto result = conn.Query(sql);
 	if (result->HasError()) {
 		throw InvalidInputException("Delta export failed: %s\nSQL: %s", result->GetError(), sql.substr(0, 200));
 	}
@@ -629,51 +631,55 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	}
 
 	// ── Run export on the current database ──
+	// Use a separate Connection to avoid deadlocking context.Query() inside a scan
+	Connection conn(*context.db);
+	auto &default_db = DatabaseManager::GetDefaultDatabase(context);
+	if (!default_db.empty()) {
+		conn.Query("USE \"" + default_db + "\"");
+	}
 
 	// Step 1: Create export tracking table
-	ExecuteSQL(context, SQL_CREATE_EXPORT_LOG);
+	ExecuteSQL(conn, SQL_CREATE_EXPORT_LOG);
 
 	// Step 2: Build export summary
-	ExecuteSQL(context, SQL_CREATE_EXPORT_SUMMARY);
-	ExecuteSQL(context, SQL_INSERT_EXPORT_SUMMARY);
+	ExecuteSQL(conn, SQL_CREATE_EXPORT_SUMMARY);
+	ExecuteSQL(conn, SQL_INSERT_EXPORT_SUMMARY);
 
 	// Step 3: Generate checkpoint parquet data
-	ExecuteSQL(context, SQL_CREATE_CHECKPOINT_PARQUET);
+	ExecuteSQL(conn, SQL_CREATE_CHECKPOINT_PARQUET);
 
 	// Step 4: Generate JSON checkpoint
-	ExecuteSQL(context, SQL_CREATE_CHECKPOINT_JSON);
+	ExecuteSQL(conn, SQL_CREATE_CHECKPOINT_JSON);
 
 	// Step 5: Generate last checkpoint
-	ExecuteSQL(context, SQL_CREATE_LAST_CHECKPOINT);
+	ExecuteSQL(conn, SQL_CREATE_LAST_CHECKPOINT);
 
 	// Step 6: Build export paths
-	ExecuteSQL(context, SQL_CREATE_EXPORT_PATHS);
+	ExecuteSQL(conn, SQL_CREATE_EXPORT_PATHS);
 
 	// Step 7: Create _delta_log directories for local paths
-	auto dirs_result = ExecuteSQL(context, SQL_GET_LOCAL_DIRS);
-	auto &dirs_materialized = dirs_result->Cast<MaterializedQueryResult>();
-	for (idx_t i = 0; i < dirs_materialized.RowCount(); i++) {
-		string dir_path = dirs_materialized.GetValue(0, i).ToString();
+	auto dirs_result = ExecuteSQL(conn, SQL_GET_LOCAL_DIRS);
+	for (idx_t i = 0; i < dirs_result->RowCount(); i++) {
+		string dir_path = dirs_result->GetValue(0, i).ToString();
 		string create_dir_sql = "COPY (SELECT 1 AS id, 1 AS \".duckdb_init\") "
 		                        "TO '" +
 		                        dir_path +
 		                        "' "
 		                        "(FORMAT CSV, PARTITION_BY (\".duckdb_init\"), OVERWRITE_OR_IGNORE);";
-		ExecuteSQL(context, create_dir_sql);
+		ExecuteSQL(conn, create_dir_sql);
 	}
 
 	// Step 8: Export loop — unlimited tables
-	auto exports_result = ExecuteSQL(context, SQL_GET_EXPORTS);
-	auto &exports_materialized = exports_result->Cast<MaterializedQueryResult>();
+	auto exports_result = ExecuteSQL(conn, SQL_GET_EXPORTS);
 
-	for (idx_t i = 0; i < exports_materialized.RowCount(); i++) {
-		int64_t table_id = exports_materialized.GetValue(1, i).GetValue<int64_t>();
-		int64_t snapshot_id = exports_materialized.GetValue(3, i).GetValue<int64_t>();
-		string checkpoint_file = exports_materialized.GetValue(4, i).ToString();
-		string json_file = exports_materialized.GetValue(5, i).ToString();
-		string last_checkpoint_file = exports_materialized.GetValue(6, i).ToString();
+	for (idx_t i = 0; i < exports_result->RowCount(); i++) {
+		int64_t table_id = exports_result->GetValue(1, i).GetValue<int64_t>();
+		int64_t snapshot_id = exports_result->GetValue(3, i).GetValue<int64_t>();
+		string checkpoint_file = exports_result->GetValue(4, i).ToString();
+		string json_file = exports_result->GetValue(5, i).ToString();
+		string last_checkpoint_file = exports_result->GetValue(6, i).ToString();
 
-		ExecuteSQL(context, "BEGIN TRANSACTION;");
+		ExecuteSQL(conn, "BEGIN TRANSACTION;");
 
 		string tid = std::to_string(table_id);
 		string sid = std::to_string(snapshot_id);
@@ -685,7 +691,7 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		                      " ORDER BY row_order) "
 		                      "TO '" +
 		                      checkpoint_file + "' (FORMAT PARQUET);";
-		ExecuteSQL(context, copy_parquet);
+		ExecuteSQL(conn, copy_parquet);
 
 		string copy_json = "COPY (SELECT content FROM temp_checkpoint_json "
 		                   "WHERE table_id = " +
@@ -693,7 +699,7 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		                   ") "
 		                   "TO '" +
 		                   json_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
-		ExecuteSQL(context, copy_json);
+		ExecuteSQL(conn, copy_json);
 
 		string copy_last = "COPY (SELECT content FROM temp_last_checkpoint "
 		                   "WHERE table_id = " +
@@ -701,27 +707,26 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		                   ") "
 		                   "TO '" +
 		                   last_checkpoint_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
-		ExecuteSQL(context, copy_last);
+		ExecuteSQL(conn, copy_last);
 
 		string insert_log = "INSERT INTO ducklake_export_log (table_id, snapshot_id) "
 		                    "VALUES (" +
 		                    tid + ", " + sid + ");";
-		ExecuteSQL(context, insert_log);
+		ExecuteSQL(conn, insert_log);
 
-		ExecuteSQL(context, "COMMIT;");
+		ExecuteSQL(conn, "COMMIT;");
 	}
 
 	// Step 9: Collect and return results
-	auto summary_result = ExecuteSQL(context, SQL_GET_EXPORT_SUMMARY);
-	auto &summary_materialized = summary_result->Cast<MaterializedQueryResult>();
+	auto summary_result = ExecuteSQL(conn, SQL_GET_EXPORT_SUMMARY);
 
-	for (idx_t i = 0; i < summary_materialized.RowCount(); i++) {
+	for (idx_t i = 0; i < summary_result->RowCount(); i++) {
 		vector<Value> row;
-		row.push_back(summary_materialized.GetValue(0, i));
-		row.push_back(summary_materialized.GetValue(1, i));
-		row.push_back(summary_materialized.GetValue(2, i));
-		row.push_back(summary_materialized.GetValue(3, i));
-		row.push_back(summary_materialized.GetValue(4, i));
+		row.push_back(summary_result->GetValue(0, i));
+		row.push_back(summary_result->GetValue(1, i));
+		row.push_back(summary_result->GetValue(2, i));
+		row.push_back(summary_result->GetValue(3, i));
+		row.push_back(summary_result->GetValue(4, i));
 		state.rows.push_back(std::move(row));
 	}
 
