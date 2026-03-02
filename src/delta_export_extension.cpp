@@ -663,6 +663,7 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	auto &fs = context.db->GetFileSystem();
 	for (idx_t i = 0; i < dirs_result->RowCount(); i++) {
 		string dir_path = dirs_result->GetValue(0, i).ToString();
+		std::replace(dir_path.begin(), dir_path.end(), '\\', '/');
 		fs.CreateDirectoriesRecursive(dir_path);
 	}
 

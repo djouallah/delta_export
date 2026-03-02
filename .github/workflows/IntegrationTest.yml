@@ -1,0 +1,43 @@
+name: Integration Test
+on:
+  workflow_run:
+    workflows: ["Main Extension Distribution Pipeline"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  python-tests:
+    name: Python tests
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download extension artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-v1.4.4-extension-linux_amd64
+          run_id: ${{ github.event.workflow_run.id }}
+          path: ./artifact
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Fallback - download latest artifact
+        if: ${{ hashFiles('artifact/delta_export.duckdb_extension') == '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-v1.4.4-extension-linux_amd64
+          workflow: MainDistributionPipeline.yml
+          path: ./artifact
+          search_artifacts: true
+
+      - run: pip install duckdb==1.4.4 pytest
+
+      - run: pytest test/python/ -v -s
+        env:
+          DELTA_EXPORT_EXTENSION_PATH: ./artifact/delta_export.duckdb_extension
