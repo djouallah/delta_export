@@ -6,7 +6,7 @@ Export DuckLake catalog tables to Delta Lake format, enabling consumption by Del
 
 ```sql
 SET allow_unsigned_extensions = true;
-INSTALL delta_export FROM 'https://github.com/djouallah/delta_export/releases/download/v1.4.4';
+INSTALL delta_export FROM 'https://djouallah.github.io/delta_export';
 LOAD delta_export;
 ```
 

@@ -1,9 +1,18 @@
 #
-# This workflow calls the main distribution pipeline from DuckDB to build, test and (optionally) release the extension
+# Full build: all platforms. Manual trigger or tag push.
+# GitHub Pages deployment only happens on tag pushes (v*).
 #
 name: Main Extension Distribution Pipeline
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
@@ -26,39 +35,89 @@ jobs:
       ci_tools_version: v1.4.4
       extension_name: delta_export
 
-  publish-to-github:
-    name: Publish to GitHub Release
-    needs: [duckdb-stable-build, code-quality-check]
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: duckdb-stable-build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
 
-      - name: Download all build artifacts
+      - name: Create directory structure
+        run: |
+          for platform in linux_amd64 linux_arm64 linux_amd64_musl osx_amd64 osx_arm64 windows_amd64 windows_amd64_mingw; do
+            mkdir -p deploy/v1.4.4/${platform}
+          done
+
+      - name: Download linux_amd64
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          path: artifacts
+          name: delta_export-v1.4.4-extension-linux_amd64
+          path: artifacts/linux_amd64/
 
-      - name: List artifacts
-        run: find artifacts -type f | head -50
-
-      - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Download linux_arm64
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          tag_name: v1.4.4
-          name: delta_export v1.4.4 (DuckDB v1.4.4)
-          body: |
-            DuckDB extension that exports DuckLake catalog tables to Delta Lake format.
+          name: delta_export-v1.4.4-extension-linux_arm64
+          path: artifacts/linux_arm64/
 
-            ## Install
-            ```sql
-            SET allow_unsigned_extensions = true;
-            INSTALL delta_export FROM 'https://github.com/djouallah/delta_export/releases/download/v1.4.4';
-            LOAD delta_export;
-            ```
-          draft: false
-          prerelease: false
-          files: |
-            artifacts/**/*.duckdb_extension.gz
-          make_latest: true
+      - name: Download linux_amd64_musl
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: delta_export-v1.4.4-extension-linux_amd64_musl
+          path: artifacts/linux_amd64_musl/
+
+      - name: Download osx_amd64
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: delta_export-v1.4.4-extension-osx_amd64
+          path: artifacts/osx_amd64/
+
+      - name: Download osx_arm64
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: delta_export-v1.4.4-extension-osx_arm64
+          path: artifacts/osx_arm64/
+
+      - name: Download windows_amd64
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: delta_export-v1.4.4-extension-windows_amd64
+          path: artifacts/windows_amd64/
+
+      - name: Download windows_amd64_mingw
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: delta_export-v1.4.4-extension-windows_amd64_mingw
+          path: artifacts/windows_amd64_mingw/
+
+      - name: Gzip and arrange artifacts
+        run: |
+          for platform in linux_amd64 linux_arm64 linux_amd64_musl osx_amd64 osx_arm64 windows_amd64 windows_amd64_mingw; do
+            if [ -f "artifacts/${platform}/delta_export.duckdb_extension" ]; then
+              gzip -c "artifacts/${platform}/delta_export.duckdb_extension" > "deploy/v1.4.4/${platform}/delta_export.duckdb_extension.gz"
+              echo "Packaged ${platform}"
+            else
+              echo "Skipping ${platform} (not found)"
+            fi
+          done
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: deploy/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
