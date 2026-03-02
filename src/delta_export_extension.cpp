@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -659,14 +660,10 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 
 	// Step 7: Create _delta_log directories for local paths
 	auto dirs_result = ExecuteSQL(conn, SQL_GET_LOCAL_DIRS);
+	auto &fs = context.db->GetFileSystem();
 	for (idx_t i = 0; i < dirs_result->RowCount(); i++) {
 		string dir_path = dirs_result->GetValue(0, i).ToString();
-		string create_dir_sql = "COPY (SELECT 1 AS id, 1 AS \".duckdb_init\") "
-		                        "TO '" +
-		                        dir_path +
-		                        "' "
-		                        "(FORMAT CSV, PARTITION_BY (\".duckdb_init\"), OVERWRITE_OR_IGNORE);";
-		ExecuteSQL(conn, create_dir_sql);
+		fs.CreateDirectoriesRecursive(dir_path);
 	}
 
 	// Step 8: Export loop — unlimited tables
