@@ -22,11 +22,14 @@ def extension_path():
 
 
 @pytest.fixture
-def conn(extension_path):
+def conn(extension_path, tmp_path):
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     con.execute(f"INSTALL '{extension_path}'")
     con.execute("LOAD delta_export")
-    con.execute("LOAD json")
-    con.execute("LOAD parquet")
+    con.execute("INSTALL ducklake")
+    ducklake_path = str(tmp_path / "metadata.ducklake")
+    data_path = str(tmp_path / "data")
+    con.execute(f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}')")
+    con.execute("USE test_lake")
     yield con
     con.close()
