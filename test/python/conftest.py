@@ -16,7 +16,9 @@ def extension_path():
     version = con.execute(
         "SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'delta_export'"
     ).fetchone()
-    print(f"\nINSTALL '{path}' successful — version: {version[0] if version else 'unknown'}")
+    print(
+        f"\nINSTALL '{path}' successful — version: {version[0] if version else 'unknown'}"
+    )
     con.close()
     return path
 
@@ -31,7 +33,9 @@ def ducklake_env(extension_path, tmp_path):
     con.execute("INSTALL delta")
     ducklake_path = str(tmp_path / "metadata.ducklake")
     data_path = str(tmp_path / "data")
-    con.execute(f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}')")
+    con.execute(
+        f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}')"
+    )
     con.execute("USE test_lake")
     yield con, data_path
     con.close()
