@@ -37,6 +37,7 @@ The function returns a summary table showing the export status of each table:
 import duckdb
 con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 con.sql("""
+        INSTALL delta_export FROM 'https://djouallah.github.io/delta_export';
          attach 'ducklake:/tmp/md.db' as db  ; use db;
          load delta_export;
          call  delta_export
