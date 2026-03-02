@@ -4,6 +4,6 @@ EXT_NAME=delta_export
 
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-DEFAULT_TEST_EXTENSION_DEPS=json
+DEFAULT_TEST_EXTENSION_DEPS=json;parquet
 
 include extension-ci-tools/makefiles/duckdb_extension.Makefile

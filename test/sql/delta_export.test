@@ -5,6 +5,8 @@ require delta_export
 
 require json
 
+require parquet
+
 # ── Create mock DuckLake catalog tables ──
 
 statement ok
