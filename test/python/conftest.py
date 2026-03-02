@@ -25,6 +25,7 @@ def extension_path():
 def conn(extension_path):
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     con.execute(f"INSTALL '{extension_path}'")
+    con.execute("LOAD delta_export")
     con.execute("LOAD json")
     con.execute("LOAD parquet")
     yield con
