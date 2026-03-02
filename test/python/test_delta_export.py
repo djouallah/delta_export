@@ -102,7 +102,9 @@ def test_roundtrip_data(ducklake_env):
     # Another update
     conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
 
-    # Checkpoint compacts data files (removes deleted rows, inlines, etc.)
+    # Force checkpoint to rewrite all files with any deletes and flush inlined data
+    conn.execute("CALL ducklake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CALL ducklake.set_option('inline_threshold', 0)")
     conn.execute("CHECKPOINT")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
@@ -111,6 +113,39 @@ def test_roundtrip_data(ducklake_env):
     delta_table_root = os.path.dirname(delta_log)
 
     ducklake_count = conn.execute("SELECT count(*) FROM sales").fetchone()[0]
+    delta_count = conn.execute(
+        f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
+    ).fetchone()[0]
+    print(f"DuckLake count: {ducklake_count}, Delta count: {delta_count}")
+    assert ducklake_count == delta_count, (
+        f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
+    )
+
+
+def test_roundtrip_with_inline_threshold(ducklake_env):
+    """Export with a custom inline threshold should still produce correct Delta data."""
+    conn, data_path = ducklake_env
+    conn.execute("CREATE TABLE products (id BIGINT, name VARCHAR, price DOUBLE)")
+    conn.execute(
+        "INSERT INTO products VALUES "
+        "(1, 'Widget', 9.99), (2, 'Gadget', 19.99), (3, 'Gizmo', 29.99), "
+        "(4, 'Doohickey', 39.99), (5, 'Thingamajig', 49.99)"
+    )
+    conn.execute("UPDATE products SET price = price * 0.9 WHERE price > 20")
+    conn.execute("DELETE FROM products WHERE id = 2")
+    conn.execute("INSERT INTO products VALUES (6, 'Contraption', 59.99)")
+
+    # Set a small inline threshold so small data gets inlined, then flush it out
+    conn.execute("CALL ducklake.set_option('inline_threshold', 1024)")
+    conn.execute("CALL ducklake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CHECKPOINT")
+    conn.execute("SELECT * FROM export_delta()").fetchall()
+
+    delta_log = _find_delta_log(data_path)
+    assert delta_log is not None, f"_delta_log not found under {data_path}"
+    delta_table_root = os.path.dirname(delta_log)
+
+    ducklake_count = conn.execute("SELECT count(*) FROM products").fetchone()[0]
     delta_count = conn.execute(
         f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
     ).fetchone()[0]
