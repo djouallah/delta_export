@@ -1,46 +1,40 @@
 name: Integration Test
 on:
-  push:
-  pull_request:
+  workflow_run:
+    workflows: ["Linux Build"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}
-  cancel-in-progress: true
-
 jobs:
-  build:
-    name: Build (linux_amd64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Build extension
-        run: make release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: delta_export-linux_amd64
-          path: build/release/extension/delta_export/delta_export.duckdb_extension
-
   python-tests:
     name: Python tests
-    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: delta_export-linux_amd64
-          path: ./artifact
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Download extension artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          run_id: ${{ github.event.workflow_run.id }}
+          path: ./artifact
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Fallback - download latest artifact
+        if: ${{ hashFiles('artifact/delta_export.duckdb_extension') == '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          workflow: LinuxBuild.yml
+          path: ./artifact
+          search_artifacts: true
 
       - run: pip install duckdb==1.4.4 pytest
 

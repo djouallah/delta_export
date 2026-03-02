@@ -1,0 +1,27 @@
+name: Linux Build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (linux_amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build extension
+        run: make release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: delta_export-linux_amd64
+          path: build/release/extension/delta_export/delta_export.duckdb_extension
