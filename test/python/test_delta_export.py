@@ -174,13 +174,6 @@ def test_data_type_mappings(ducklake_env):
         "INSERT INTO typed_table VALUES "
         "(1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '\\x0102'::BLOB, '2024-01-01', '2024-01-01 12:00:00')"
     )
-    # Debug: print what DuckLake actually stores in column_type
-    raw_types = conn.execute(
-        "SELECT column_name, column_type FROM \"__ducklake_metadata_test_lake\".ducklake_column "
-        "WHERE end_snapshot IS NULL ORDER BY column_order"
-    ).fetchall()
-    print(f"DuckLake raw column_types: {[(r[0], r[1]) for r in raw_types]}")
-
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
     delta_log = _find_delta_log(data_path)

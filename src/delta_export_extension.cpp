@@ -138,22 +138,23 @@ table_schemas AS (
             'name': c.column_name,
             'type':
                 CASE
-                    WHEN lower(c.column_type) = 'tinyint' THEN 'byte'
-                    WHEN lower(c.column_type) = 'smallint' THEN 'short'
-                    WHEN lower(c.column_type) IN ('integer', 'int') THEN 'integer'
-                    WHEN lower(c.column_type) = 'bigint' THEN 'long'
-                    WHEN lower(c.column_type) = 'hugeint' THEN 'string'
-                    WHEN lower(c.column_type) = 'utinyint' THEN 'short'
-                    WHEN lower(c.column_type) = 'usmallint' THEN 'integer'
-                    WHEN lower(c.column_type) = 'uinteger' THEN 'long'
-                    WHEN lower(c.column_type) = 'ubigint' THEN 'string'
-                    WHEN lower(c.column_type) = 'float' THEN 'float'
-                    WHEN lower(c.column_type) = 'double' THEN 'double'
-                    WHEN lower(c.column_type) = 'boolean' THEN 'boolean'
-                    WHEN contains(lower(c.column_type), 'decimal') THEN lower(c.column_type)
-                    WHEN contains(lower(c.column_type), 'timestamp') THEN 'timestamp'
-                    WHEN lower(c.column_type) = 'date' THEN 'date'
-                    WHEN lower(c.column_type) = 'blob' THEN 'binary'
+                    WHEN c.column_type IN ('int8', 'tinyint') THEN 'byte'
+                    WHEN c.column_type IN ('int16', 'smallint') THEN 'short'
+                    WHEN c.column_type IN ('int32', 'integer', 'int') THEN 'integer'
+                    WHEN c.column_type IN ('int64', 'bigint') THEN 'long'
+                    WHEN c.column_type IN ('int128', 'hugeint') THEN 'string'
+                    WHEN c.column_type IN ('uint8', 'utinyint') THEN 'short'
+                    WHEN c.column_type IN ('uint16', 'usmallint') THEN 'integer'
+                    WHEN c.column_type IN ('uint32', 'uinteger') THEN 'long'
+                    WHEN c.column_type IN ('uint64', 'ubigint') THEN 'string'
+                    WHEN c.column_type IN ('float32', 'float') THEN 'float'
+                    WHEN c.column_type IN ('float64', 'double') THEN 'double'
+                    WHEN c.column_type = 'boolean' THEN 'boolean'
+                    WHEN contains(c.column_type, 'decimal') THEN c.column_type
+                    WHEN contains(c.column_type, 'timestamp') THEN 'timestamp'
+                    WHEN c.column_type = 'date' THEN 'date'
+                    WHEN c.column_type = 'blob' THEN 'binary'
+                    WHEN c.column_type = 'varchar' THEN 'string'
                     ELSE 'string'
                 END,
             'nullable': true,
