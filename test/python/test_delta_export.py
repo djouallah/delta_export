@@ -44,9 +44,7 @@ def test_export_creates_delta_files(ducklake_env):
     assert delta_log is not None, f"_delta_log not found under {data_path}"
 
     files = os.listdir(delta_log)
-    assert any(
-        f.endswith(".checkpoint.parquet") for f in files
-    ), f"No checkpoint parquet in {files}"
+    assert any(f.endswith(".checkpoint.parquet") for f in files), f"No checkpoint parquet in {files}"
     assert any(f.endswith(".json") for f in files), f"No json file in {files}"
     assert "_last_checkpoint" in files, f"No _last_checkpoint in {files}"
 
@@ -60,17 +58,10 @@ def test_checkpoint_parquet_readable(ducklake_env):
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
-    parquet_files = [
-        f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")
-    ]
+    parquet_files = [f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")]
     parquet_path = os.path.join(delta_log, parquet_files[0])
 
-    col_names = [
-        d[0]
-        for d in conn.execute(
-            f"SELECT * FROM read_parquet('{parquet_path}') LIMIT 0"
-        ).description
-    ]
+    col_names = [d[0] for d in conn.execute(f"SELECT * FROM read_parquet('{parquet_path}') LIMIT 0").description]
     assert "protocol" in col_names
     assert "metaData" in col_names
     assert "add" in col_names
@@ -118,13 +109,9 @@ def test_roundtrip_data(ducklake_env):
     delta_table_root = os.path.dirname(delta_log)
 
     ducklake_count = conn.execute("SELECT count(*) FROM sales").fetchone()[0]
-    delta_count = conn.execute(
-        f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
-    ).fetchone()[0]
+    delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
     print(f"DuckLake count: {ducklake_count}, Delta count: {delta_count}")
-    assert (
-        ducklake_count == delta_count
-    ), f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
+    assert ducklake_count == delta_count, f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
 
 
 def test_roundtrip_with_inline_threshold(ducklake_env):
@@ -150,13 +137,9 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
     delta_table_root = os.path.dirname(delta_log)
 
     ducklake_count = conn.execute("SELECT count(*) FROM products").fetchone()[0]
-    delta_count = conn.execute(
-        f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
-    ).fetchone()[0]
+    delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
     print(f"DuckLake count: {ducklake_count}, Delta count: {delta_count}")
-    assert (
-        ducklake_count == delta_count
-    ), f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
+    assert ducklake_count == delta_count, f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
 
 
 def test_data_type_mappings(ducklake_env):
@@ -187,9 +170,7 @@ def test_data_type_mappings(ducklake_env):
     assert delta_log is not None, f"_delta_log not found under {data_path}"
 
     # Read the checkpoint parquet and extract the metaData schemaString
-    parquet_files = [
-        f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")
-    ]
+    parquet_files = [f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")]
     parquet_path = os.path.join(delta_log, parquet_files[0])
     rows = conn.execute(
         f"SELECT metaData.schemaString FROM read_parquet('{parquet_path}') WHERE metaData IS NOT NULL"
@@ -216,15 +197,11 @@ def test_data_type_mappings(ducklake_env):
     }
     for col, exp in expected.items():
         actual = fields.get(col, "MISSING")
-        print(
-            f"  {col}: expected={exp}, got={actual}, {'OK' if actual == exp else 'MISMATCH'}"
-        )
+        print(f"  {col}: expected={exp}, got={actual}, {'OK' if actual == exp else 'MISMATCH'}")
     for col, exp in expected.items():
         assert fields[col] == exp, f"{col}: expected {exp}, got {fields[col]}"
 
     # Also verify delta_scan can read the data back
     delta_table_root = os.path.dirname(delta_log)
-    delta_count = conn.execute(
-        f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
-    ).fetchone()[0]
+    delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
     assert delta_count == 1, f"Expected 1 row from delta_scan, got {delta_count}"
