@@ -22,7 +22,8 @@ def extension_path():
 
 
 @pytest.fixture
-def conn(extension_path, tmp_path):
+def ducklake_env(extension_path, tmp_path):
+    """Returns (conn, data_path) with a real DuckLake catalog attached."""
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     con.execute(f"INSTALL '{extension_path}'")
     con.execute("LOAD delta_export")
@@ -31,5 +32,10 @@ def conn(extension_path, tmp_path):
     data_path = str(tmp_path / "data")
     con.execute(f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}')")
     con.execute("USE test_lake")
-    yield con
+    yield con, data_path
     con.close()
+
+
+@pytest.fixture
+def conn(ducklake_env):
+    return ducklake_env[0]

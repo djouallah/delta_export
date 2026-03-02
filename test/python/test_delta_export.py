@@ -24,13 +24,13 @@ def test_export_idempotent(conn):
     assert rows[0][1] == "already_exported"
 
 
-def test_export_creates_delta_files(conn, tmp_path):
+def test_export_creates_delta_files(ducklake_env):
     """Export should create checkpoint parquet, json, and _last_checkpoint."""
+    conn, data_path = ducklake_env
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
-    data_path = str(tmp_path / "data")
     delta_log = os.path.join(data_path, "test_table", "_delta_log")
     assert os.path.isdir(delta_log), f"_delta_log directory not created at {delta_log}"
 
@@ -40,13 +40,13 @@ def test_export_creates_delta_files(conn, tmp_path):
     assert "_last_checkpoint" in files, f"No _last_checkpoint in {files}"
 
 
-def test_checkpoint_parquet_readable(conn, tmp_path):
+def test_checkpoint_parquet_readable(ducklake_env):
     """The checkpoint parquet should be readable and contain expected columns."""
+    conn, data_path = ducklake_env
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
-    data_path = str(tmp_path / "data")
     delta_log = os.path.join(data_path, "test_table", "_delta_log")
     parquet_files = [f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")]
     parquet_path = os.path.join(delta_log, parquet_files[0])
