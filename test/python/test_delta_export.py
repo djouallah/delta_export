@@ -102,7 +102,8 @@ def test_roundtrip_data(ducklake_env):
     # Another update
     conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
 
-    # Export once at the end
+    # Checkpoint compacts data files (removes deleted rows, inlines, etc.)
+    conn.execute("CHECKPOINT")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
     delta_log = _find_delta_log(data_path)
