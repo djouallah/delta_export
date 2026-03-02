@@ -1,11 +1,50 @@
 # name: test/sql/delta_export.test
 # group: [sql]
 
-# Require the extension to be loaded
 require delta_export
 
-# Verify the export_delta table function is registered
-query I
-SELECT count(*) FROM duckdb_functions() WHERE function_name = 'export_delta' AND function_type = 'table';
+# ── Create mock DuckLake catalog tables ──
+
+statement ok
+CREATE TABLE ducklake_metadata AS SELECT 'data_path' as key, '__TEST_DIR__/delta_export_test' as value;
+
+statement ok
+CREATE TABLE ducklake_schema AS SELECT 1 as schema_id, 'main' as schema_name, '' as path;
+
+statement ok
+CREATE TABLE ducklake_table AS SELECT 1 as table_id, 'test_table' as table_name, 'test_table' as path, NULL::BIGINT as end_snapshot, 1 as schema_id;
+
+statement ok
+CREATE TABLE ducklake_snapshot AS SELECT 1 as snapshot_id;
+
+statement ok
+CREATE TABLE ducklake_snapshot_changes AS SELECT 1 as snapshot_id, 'modified:1' as changes_made;
+
+statement ok
+CREATE TABLE ducklake_data_file AS SELECT 1 as data_file_id, 1 as table_id, '/data/part-0001.parquet' as path, 1024::BIGINT as file_size_bytes, NULL::BIGINT as end_snapshot;
+
+statement ok
+CREATE TABLE ducklake_column AS SELECT * FROM (VALUES
+    (1, 1, 'id', 'BIGINT', 0, NULL::BIGINT),
+    (2, 1, 'name', 'VARCHAR', 1, NULL::BIGINT)
+) t(column_id, table_id, column_name, column_type, column_order, end_snapshot);
+
+statement ok
+CREATE TABLE ducklake_file_column_stats AS SELECT * FROM (VALUES
+    (1, 1, 100::BIGINT, '1', '100', 0::BIGINT),
+    (1, 2, 100::BIGINT, 'Alice', 'Zoe', 5::BIGINT)
+) t(data_file_id, column_id, value_count, min_value, max_value, null_count);
+
+# ── First export: table should need export ──
+
+query TTITT
+SELECT * FROM export_delta();
 ----
-1
+main.test_table	needs_export	1	Data snapshot 1 needs Delta export	Ready for export
+
+# ── Second export: already exported (idempotency) ──
+
+query TTITT
+SELECT * FROM export_delta();
+----
+main.test_table	already_exported	1	Data snapshot 1 already exported	Snapshot 1 already exported
