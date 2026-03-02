@@ -239,7 +239,7 @@ file_metadata AS (
         df.data_file_id,
         df.path AS file_path,
         df.file_size_bytes,
-        COALESCE(MAX(fct.value_count), 0) AS num_records,
+        df.record_count AS num_records,
         COALESCE(map_from_entries(list({
             'key': fct.column_name,
             'value': fct.transformed_min
@@ -257,7 +257,7 @@ file_metadata AS (
     LEFT JOIN file_column_stats_transformed fct ON df.data_file_id = fct.data_file_id
     WHERE df.end_snapshot IS NULL
     GROUP BY ts.table_id, ts.schema_name, ts.table_name, ts.snapshot_id,
-             ts.table_root, ts.schema_fields, df.data_file_id, df.path, df.file_size_bytes
+             ts.table_root, ts.schema_fields, df.data_file_id, df.path, df.file_size_bytes, df.record_count
 ),
 table_aggregates AS (
     SELECT

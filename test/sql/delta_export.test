@@ -3,6 +3,8 @@
 
 require delta_export
 
+require delta
+
 require json
 
 require parquet
@@ -36,3 +38,82 @@ query TT
 SELECT table_name, status FROM export_delta();
 ----
 main.test_table	already_exported
+
+# ── Complex transactions: insert, update, delete then export ──
+
+statement ok
+CREATE TABLE sales (id BIGINT, amount DOUBLE, region VARCHAR);
+
+statement ok
+INSERT INTO sales VALUES (1, 10.0, 'US'), (2, 20.0, 'EU'), (3, 30.0, 'US'), (4, 40.0, 'APAC'), (5, 50.0, 'EU'), (6, 60.0, 'US');
+
+statement ok
+UPDATE sales SET amount = amount * 1.1 WHERE region = 'EU';
+
+statement ok
+DELETE FROM sales WHERE id = 4;
+
+statement ok
+INSERT INTO sales VALUES (7, 70.0, 'APAC'), (8, 80.0, 'US');
+
+statement ok
+UPDATE sales SET region = 'NA' WHERE region = 'US';
+
+# export_delta() flushes inlined data and rewrites files with deletes internally
+
+query TT
+SELECT table_name, status FROM export_delta() WHERE table_name = 'main.sales';
+----
+main.sales	needs_export
+
+# ── Verify DuckLake row count matches after export ──
+
+query I
+SELECT count(*) FROM sales;
+----
+7
+
+# ── Data inlining: small inserts go to metadata ──
+
+statement ok
+CREATE TABLE products (id BIGINT, name VARCHAR, price DOUBLE);
+
+statement ok
+CALL test_lake.set_option('data_inlining_row_limit', 10);
+
+statement ok
+INSERT INTO products VALUES (1, 'Widget', 9.99), (2, 'Gadget', 19.99), (3, 'Gizmo', 29.99);
+
+statement ok
+DELETE FROM products WHERE id = 2;
+
+statement ok
+INSERT INTO products VALUES (4, 'Doohickey', 39.99);
+
+query TT
+SELECT table_name, status FROM export_delta() WHERE table_name = 'main.products';
+----
+main.products	needs_export
+
+query I
+SELECT count(*) FROM products;
+----
+3
+
+# ── Data type mappings ──
+
+statement ok
+CREATE TABLE typed_table (col_tinyint TINYINT, col_smallint SMALLINT, col_integer INTEGER, col_bigint BIGINT, col_float FLOAT, col_double DOUBLE, col_boolean BOOLEAN, col_varchar VARCHAR, col_date DATE, col_timestamp TIMESTAMP);
+
+statement ok
+INSERT INTO typed_table VALUES (1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '2024-01-01', '2024-01-01 12:00:00');
+
+query TT
+SELECT table_name, status FROM export_delta() WHERE table_name = 'main.typed_table';
+----
+main.typed_table	needs_export
+
+query I
+SELECT count(*) FROM typed_table;
+----
+1
