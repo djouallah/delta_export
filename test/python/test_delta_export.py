@@ -80,3 +80,28 @@ def test_multiple_tables(conn):
     assert "main.customers" in names
     assert "main.orders" in names
     assert all(r[1] == "needs_export" for r in rows)
+
+
+def test_roundtrip_data(ducklake_env):
+    """Exported Delta table should have the same row count as the DuckLake source."""
+    conn, data_path = ducklake_env
+    conn.execute("CREATE TABLE sales (id BIGINT, amount DOUBLE, region VARCHAR)")
+    conn.execute(
+        "INSERT INTO sales VALUES (1, 10.0, 'US'), (2, 20.0, 'EU'), (3, 30.0, 'US')"
+    )
+    conn.execute("SELECT * FROM export_delta()").fetchall()
+
+    delta_log = _find_delta_log(data_path)
+    assert delta_log is not None, f"_delta_log not found under {data_path}"
+
+    # The delta table root is the parent of _delta_log
+    delta_table_root = os.path.dirname(delta_log)
+
+    # Compare count(*) from DuckLake vs delta_scan
+    ducklake_count = conn.execute("SELECT count(*) FROM sales").fetchone()[0]
+    delta_count = conn.execute(
+        f"SELECT count(*) FROM delta_scan('{delta_table_root}')"
+    ).fetchone()[0]
+    assert ducklake_count == delta_count == 3, (
+        f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}, expected=3"
+    )

@@ -28,6 +28,7 @@ def ducklake_env(extension_path, tmp_path):
     con.execute(f"INSTALL '{extension_path}'")
     con.execute("LOAD delta_export")
     con.execute("INSTALL ducklake")
+    con.execute("INSTALL delta")
     ducklake_path = str(tmp_path / "metadata.ducklake")
     data_path = str(tmp_path / "data")
     con.execute(f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}')")
