@@ -103,8 +103,8 @@ def test_roundtrip_data(ducklake_env):
     conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
 
     # Force checkpoint to rewrite all files with any deletes and flush inlined data
-    conn.execute("CALL ducklake.set_option('rewrite_delete_threshold', 0)")
-    conn.execute("CALL ducklake.set_option('inline_threshold', 0)")
+    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 0)")
     conn.execute("CHECKPOINT")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
@@ -135,9 +135,9 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
     conn.execute("DELETE FROM products WHERE id = 2")
     conn.execute("INSERT INTO products VALUES (6, 'Contraption', 59.99)")
 
-    # Set a small inline threshold so small data gets inlined, then flush it out
-    conn.execute("CALL ducklake.set_option('inline_threshold', 1024)")
-    conn.execute("CALL ducklake.set_option('rewrite_delete_threshold', 0)")
+    # Enable data inlining so small inserts go to metadata, then flush on checkpoint
+    conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 10)")
+    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
     conn.execute("CHECKPOINT")
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
