@@ -174,6 +174,13 @@ def test_data_type_mappings(ducklake_env):
         "INSERT INTO typed_table VALUES "
         "(1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '\\x0102'::BLOB, '2024-01-01', '2024-01-01 12:00:00')"
     )
+    # Debug: print what DuckLake actually stores in column_type
+    raw_types = conn.execute(
+        "SELECT column_name, column_type FROM \"__ducklake_metadata_test_lake\".ducklake_column "
+        "WHERE end_snapshot IS NULL ORDER BY column_order"
+    ).fetchall()
+    print(f"DuckLake raw column_types: {[(r[0], r[1]) for r in raw_types]}")
+
     conn.execute("SELECT * FROM export_delta()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -191,17 +198,18 @@ def test_data_type_mappings(ducklake_env):
     fields = {f["name"]: f["type"] for f in schema["fields"]}
     print(f"Schema fields: {fields}")
 
-    assert fields["col_tinyint"] == "byte", f"TINYINT should map to byte, got {fields['col_tinyint']}"
-    assert fields["col_smallint"] == "short", f"SMALLINT should map to short, got {fields['col_smallint']}"
-    assert fields["col_integer"] == "integer", f"INTEGER should map to integer, got {fields['col_integer']}"
-    assert fields["col_bigint"] == "long", f"BIGINT should map to long, got {fields['col_bigint']}"
-    assert fields["col_float"] == "float", f"FLOAT should map to float, got {fields['col_float']}"
-    assert fields["col_double"] == "double", f"DOUBLE should map to double, got {fields['col_double']}"
-    assert fields["col_boolean"] == "boolean", f"BOOLEAN should map to boolean, got {fields['col_boolean']}"
-    assert fields["col_varchar"] == "string", f"VARCHAR should map to string, got {fields['col_varchar']}"
-    assert fields["col_blob"] == "binary", f"BLOB should map to binary, got {fields['col_blob']}"
-    assert fields["col_date"] == "date", f"DATE should map to date, got {fields['col_date']}"
-    assert fields["col_timestamp"] == "timestamp", f"TIMESTAMP should map to timestamp, got {fields['col_timestamp']}"
+    # Print all mappings for diagnosis, then assert
+    expected = {
+        "col_tinyint": "byte", "col_smallint": "short", "col_integer": "integer",
+        "col_bigint": "long", "col_float": "float", "col_double": "double",
+        "col_boolean": "boolean", "col_varchar": "string", "col_blob": "binary",
+        "col_date": "date", "col_timestamp": "timestamp",
+    }
+    for col, exp in expected.items():
+        actual = fields.get(col, "MISSING")
+        print(f"  {col}: expected={exp}, got={actual}, {'OK' if actual == exp else 'MISMATCH'}")
+    for col, exp in expected.items():
+        assert fields[col] == exp, f"{col}: expected {exp}, got {fields[col]}"
 
     # Also verify delta_scan can read the data back
     delta_table_root = os.path.dirname(delta_log)
