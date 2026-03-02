@@ -3,6 +3,8 @@
 
 require delta_export
 
+require json
+
 # ── Create mock DuckLake catalog tables ──
 
 statement ok
