@@ -539,6 +539,37 @@ ORDER BY
 )";
 
 //===--------------------------------------------------------------------===//
+// Helper: Qualify ducklake_* table names with the metadata catalog prefix
+//===--------------------------------------------------------------------===//
+static string QualifyMetadataTables(const string &sql, const string &metadata_catalog) {
+	if (metadata_catalog.empty()) {
+		return sql;
+	}
+	string prefix = "\"" + metadata_catalog + "\".";
+	// Replace longest names first to avoid partial matches
+	// e.g. ducklake_snapshot_changes before ducklake_snapshot
+	string result = sql;
+	vector<string> tables = {"ducklake_file_column_stats", "ducklake_snapshot_changes", "ducklake_data_file",
+	                         "ducklake_metadata",         "ducklake_snapshot",         "ducklake_column",
+	                         "ducklake_schema",           "ducklake_table"};
+	for (auto &table : tables) {
+		string qualified = prefix + table;
+		// Replace all occurrences
+		size_t pos = 0;
+		while ((pos = result.find(table, pos)) != string::npos) {
+			// Don't double-qualify if already prefixed
+			if (pos >= prefix.size() && result.substr(pos - prefix.size(), prefix.size()) == prefix) {
+				pos += table.size();
+				continue;
+			}
+			result.replace(pos, table.size(), qualified);
+			pos += qualified.size();
+		}
+	}
+	return result;
+}
+
+//===--------------------------------------------------------------------===//
 // Helper: Execute SQL and throw on error
 //===--------------------------------------------------------------------===//
 static unique_ptr<MaterializedQueryResult> ExecuteSQL(Connection &conn, const string &sql) {
@@ -620,19 +651,15 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	// Use a separate Connection to avoid deadlocking context.Query() inside a scan
 	Connection conn(*context.db);
 	auto &default_db = DatabaseManager::GetDefaultDatabase(context);
-	if (!default_db.empty()) {
-		// Switch to the DuckLake internal metadata database (regular DuckDB),
-		// not the DuckLake catalog itself. This is where ducklake_metadata,
-		// ducklake_table etc. live, and where ducklake_export_log is created.
-		conn.Query("USE \"__ducklake_metadata_" + default_db + "\"");
-	}
+	// Build the metadata catalog name for qualifying ducklake_* table references
+	string metadata_catalog = default_db.empty() ? "" : "__ducklake_metadata_" + default_db;
 
-	// Step 1: Build export summary
+	// Step 1: Build export summary (reads ducklake_* tables)
 	ExecuteSQL(conn, SQL_CREATE_EXPORT_SUMMARY);
-	ExecuteSQL(conn, SQL_INSERT_EXPORT_SUMMARY);
+	ExecuteSQL(conn, QualifyMetadataTables(SQL_INSERT_EXPORT_SUMMARY, metadata_catalog));
 
-	// Step 3: Generate checkpoint parquet data
-	ExecuteSQL(conn, SQL_CREATE_CHECKPOINT_PARQUET);
+	// Step 2: Generate checkpoint parquet data (reads ducklake_* tables)
+	ExecuteSQL(conn, QualifyMetadataTables(SQL_CREATE_CHECKPOINT_PARQUET, metadata_catalog));
 
 	// Step 4: Generate JSON checkpoint
 	ExecuteSQL(conn, SQL_CREATE_CHECKPOINT_JSON);
