@@ -331,7 +331,9 @@ def test_dbt_duckdb_pattern(extension_path, tmp_path):
             ducklake_count = conn.execute(f"SELECT count(*) FROM aemo.{table_name}").fetchone()[0]
             delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{root}')").fetchone()[0]
             print(f"dbt pattern - {table_name}: DuckLake={ducklake_count}, Delta={delta_count}")
-            assert ducklake_count == delta_count, f"{table_name} mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
+            assert (
+                ducklake_count == delta_count
+            ), f"{table_name} mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
             tables_verified += 1
 
     assert tables_verified == 2, f"Expected 2 tables verified, got {tables_verified}"
