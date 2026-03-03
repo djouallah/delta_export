@@ -74,7 +74,7 @@ table_last_modified AS (
            AND df.end_snapshot IS NULL
         ) AS file_count
     FROM active_tables t
-),
+)
 SELECT
     table_id,
     schema_name,

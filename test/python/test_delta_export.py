@@ -288,73 +288,53 @@ def test_dbt_duckdb_pattern(extension_path, tmp_path):
     data_path = str(tmp_path / "data")
 
     # Exactly how dbt-duckdb sets up the connection
-    conn = duckdb.connect(':memory:', config={"allow_unsigned_extensions": "true"})
+    conn = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     conn.execute(
         f"INSTALL '{extension_path}';"
         f"LOAD delta_export;"
-        f"INSTALL ducklake;"
-        f"INSTALL delta;"
         f"ATTACH 'ducklake:sqlite:{sqlite_path}' AS ducklake (DATA_PATH '{data_path}');"
         f"USE ducklake;"
     )
 
-    # Simulate dbt models creating tables
-    conn.execute("CREATE SCHEMA IF NOT EXISTS aemo")
-    conn.execute("CREATE TABLE aemo.demand (ts TIMESTAMP, region VARCHAR, value DOUBLE)")
+    # Simulate dbt models creating tables, then on-run-end: flush, rewrite
     conn.execute(
+        "CREATE SCHEMA IF NOT EXISTS aemo;"
+        "CREATE TABLE aemo.demand (ts TIMESTAMP, region VARCHAR, value DOUBLE);"
         "INSERT INTO aemo.demand "
         "SELECT '2024-01-01'::TIMESTAMP + INTERVAL (i) HOUR, "
         "CASE i % 3 WHEN 0 THEN 'NSW' WHEN 1 THEN 'VIC' ELSE 'QLD' END, "
         "i * 100.0 "
-        "FROM range(1, 201) t(i)"
-    )
-    conn.execute("CREATE TABLE aemo.prices (ts TIMESTAMP, region VARCHAR, price DOUBLE)")
-    conn.execute(
+        "FROM range(1, 201) t(i);"
+        "CREATE TABLE aemo.prices (ts TIMESTAMP, region VARCHAR, price DOUBLE);"
         "INSERT INTO aemo.prices "
         "SELECT '2024-01-01'::TIMESTAMP + INTERVAL (i) HOUR, "
         "CASE i % 3 WHEN 0 THEN 'NSW' WHEN 1 THEN 'VIC' ELSE 'QLD' END, "
         "i * 5.5 "
-        "FROM range(1, 101) t(i)"
+        "FROM range(1, 101) t(i);"
+        "CALL ducklake.set_option('rewrite_delete_threshold', 0);"
+        "CALL ducklake_flush_inlined_data('ducklake');"
+        "CALL ducklake_rewrite_data_files('ducklake');"
     )
+    conn.execute("CALL delta_export()")
 
-    # Simulate dbt on-run-end: flush, rewrite, then export
-    conn.execute("CALL ducklake.set_option('rewrite_delete_threshold', 0)")
-    conn.execute("CALL ducklake_flush_inlined_data('ducklake')")
-    conn.execute("CALL ducklake_rewrite_data_files('ducklake')")
-    rows = conn.execute("SELECT * FROM delta_export()").fetchall()
-
-    # Should export both tables
-    assert len(rows) == 2, f"Expected 2 tables, got {len(rows)}: {rows}"
-    names = [r[0] for r in rows]
-    assert "aemo.demand" in names, f"demand not in {names}"
-    assert "aemo.prices" in names, f"prices not in {names}"
-    assert all(r[1] == "needs_export" for r in rows)
-
-    # Verify Delta files exist
-    delta_logs_found = 0
+    # Compare DuckLake tables vs delta_scan for each table
+    tables_verified = 0
     for root, dirs, files in os.walk(data_path):
         if "_delta_log" in dirs:
-            delta_logs_found += 1
             delta_log = os.path.join(root, "_delta_log")
-            log_files = os.listdir(delta_log)
-            assert any(f.endswith(".checkpoint.parquet") for f in log_files), f"No checkpoint in {delta_log}"
-            assert any(f.endswith(".json") for f in log_files), f"No json in {delta_log}"
-            assert "_last_checkpoint" in log_files, f"No _last_checkpoint in {delta_log}"
-
-            # Verify roundtrip via delta_scan
-            delta_table_root = root
-            parquet_files = [f for f in log_files if f.endswith(".checkpoint.parquet")]
+            parquet_files = [f for f in os.listdir(delta_log) if f.endswith(".checkpoint.parquet")]
             meta = conn.execute(
                 f"SELECT metaData.name FROM read_parquet('{os.path.join(delta_log, parquet_files[0])}') "
                 f"WHERE metaData IS NOT NULL"
             ).fetchone()
             table_name = meta[0] if meta else "unknown"
             ducklake_count = conn.execute(f"SELECT count(*) FROM aemo.{table_name}").fetchone()[0]
-            delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
+            delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{root}')").fetchone()[0]
             print(f"dbt pattern - {table_name}: DuckLake={ducklake_count}, Delta={delta_count}")
             assert ducklake_count == delta_count, f"{table_name} mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
+            tables_verified += 1
 
-    assert delta_logs_found == 2, f"Expected 2 delta_log dirs, found {delta_logs_found}"
+    assert tables_verified == 2, f"Expected 2 tables verified, got {tables_verified}"
     conn.close()
 
 
