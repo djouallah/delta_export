@@ -81,55 +81,131 @@ def test_multiple_tables(conn):
     assert all(r[1] == "needs_export" for r in rows)
 
 
-def test_roundtrip_data(ducklake_env):
-    """After complex transactions, exported Delta should match DuckLake row count."""
+def test_roundtrip_heavy_mutations(ducklake_env):
+    """Stress test: bulk inserts via range(), multiple updates, deletes, and re-inserts."""
     conn, data_path = ducklake_env
-    conn.execute("CREATE TABLE sales (id BIGINT, amount DOUBLE, region VARCHAR)")
+    conn.execute("CREATE TABLE events (id BIGINT, category VARCHAR, value DOUBLE, active BOOLEAN)")
 
-    # Bulk insert
+    # Bulk insert 1000 rows using range()
     conn.execute(
-        "INSERT INTO sales VALUES "
-        "(1, 10.0, 'US'), (2, 20.0, 'EU'), (3, 30.0, 'US'), "
-        "(4, 40.0, 'APAC'), (5, 50.0, 'EU'), (6, 60.0, 'US')"
+        "INSERT INTO events "
+        "SELECT i, CASE i % 5 WHEN 0 THEN 'A' WHEN 1 THEN 'B' WHEN 2 THEN 'C' "
+        "WHEN 3 THEN 'D' ELSE 'E' END, i * 1.5, true "
+        "FROM range(1, 1001) t(i)"
     )
-    # Update some rows
-    conn.execute("UPDATE sales SET amount = amount * 1.1 WHERE region = 'EU'")
-    # Delete a row
-    conn.execute("DELETE FROM sales WHERE id = 4")
-    # Insert more
-    conn.execute("INSERT INTO sales VALUES (7, 70.0, 'APAC'), (8, 80.0, 'US')")
-    # Another update
-    conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
+    # Delete 20% of rows
+    conn.execute("DELETE FROM events WHERE id % 5 = 0")
+    # Update half the remaining rows
+    conn.execute("UPDATE events SET value = value * 2.0, category = 'X' WHERE id % 2 = 1")
+    # Insert another batch
+    conn.execute(
+        "INSERT INTO events "
+        "SELECT i, 'NEW', i * 0.1, false FROM range(1001, 1501) t(i)"
+    )
+    # Delete some of the new rows
+    conn.execute("DELETE FROM events WHERE id > 1400")
+    # Update across old and new rows
+    conn.execute("UPDATE events SET active = false WHERE value > 500")
+    # One more insert
+    conn.execute(
+        "INSERT INTO events "
+        "SELECT i, 'FINAL', 0.0, true FROM range(2000, 2101) t(i)"
+    )
 
-    # delta_export() internally flushes inlined data and rewrites files with deletes
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
     delta_table_root = os.path.dirname(delta_log)
 
-    ducklake_count = conn.execute("SELECT count(*) FROM sales").fetchone()[0]
+    ducklake_count = conn.execute("SELECT count(*) FROM events").fetchone()[0]
     delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
     print(f"DuckLake count: {ducklake_count}, Delta count: {delta_count}")
     assert ducklake_count == delta_count, f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
 
+    # Also verify a few aggregate values match
+    ducklake_sum = conn.execute("SELECT round(sum(value), 2) FROM events").fetchone()[0]
+    delta_sum = conn.execute(f"SELECT round(sum(value), 2) FROM delta_scan('{delta_table_root}')").fetchone()[0]
+    print(f"DuckLake sum: {ducklake_sum}, Delta sum: {delta_sum}")
+    assert ducklake_sum == delta_sum, f"Sum mismatch: DuckLake={ducklake_sum}, Delta={delta_sum}"
+
+
+def test_roundtrip_multiple_tables_with_mutations(ducklake_env):
+    """Multiple tables with different mutation patterns, all exported and verified."""
+    conn, data_path = ducklake_env
+
+    # Table 1: heavy inserts, no deletes
+    conn.execute("CREATE TABLE logs (id BIGINT, ts TIMESTAMP, msg VARCHAR)")
+    conn.execute(
+        "INSERT INTO logs "
+        "SELECT i, '2024-01-01'::TIMESTAMP + INTERVAL (i) MINUTE, 'log entry ' || i "
+        "FROM range(1, 501) t(i)"
+    )
+
+    # Table 2: insert then delete most rows
+    conn.execute("CREATE TABLE temp_data (id BIGINT, payload VARCHAR)")
+    conn.execute("INSERT INTO temp_data SELECT i, repeat('x', 50) FROM range(1, 301) t(i)")
+    conn.execute("DELETE FROM temp_data WHERE id > 10")
+
+    # Table 3: insert-update-delete cycles
+    conn.execute("CREATE TABLE accounts (id BIGINT, balance DOUBLE, status VARCHAR)")
+    conn.execute("INSERT INTO accounts SELECT i, i * 100.0, 'active' FROM range(1, 201) t(i)")
+    conn.execute("UPDATE accounts SET balance = balance - 50 WHERE id <= 100")
+    conn.execute("DELETE FROM accounts WHERE balance <= 0")
+    conn.execute("UPDATE accounts SET status = 'premium' WHERE balance > 10000")
+    conn.execute("INSERT INTO accounts SELECT i, 5000.0, 'new' FROM range(201, 251) t(i)")
+
+    conn.execute("SELECT * FROM delta_export()").fetchall()
+
+    # Verify each table
+    for table in ['logs', 'temp_data', 'accounts']:
+        delta_log = None
+        for root, dirs, files in os.walk(data_path):
+            if "_delta_log" in dirs and table in root:
+                delta_log = os.path.join(root, "_delta_log")
+                break
+        if delta_log is None:
+            # find by walking all delta logs
+            for root, dirs, files in os.walk(data_path):
+                if "_delta_log" in dirs:
+                    delta_table_root = root
+                    # check if this is the right table by reading the checkpoint
+                    parquet_files = [f for f in os.listdir(os.path.join(root, "_delta_log")) if f.endswith(".checkpoint.parquet")]
+                    if parquet_files:
+                        meta = conn.execute(
+                            f"SELECT metaData.name FROM read_parquet('{os.path.join(root, '_delta_log', parquet_files[0])}') WHERE metaData IS NOT NULL"
+                        ).fetchone()
+                        if meta and meta[0] == table:
+                            delta_log = os.path.join(root, "_delta_log")
+                            break
+
+        assert delta_log is not None, f"_delta_log not found for {table}"
+        delta_table_root = os.path.dirname(delta_log)
+        ducklake_count = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
+        print(f"{table}: DuckLake={ducklake_count}, Delta={delta_count}")
+        assert ducklake_count == delta_count, f"{table} count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
+
 
 def test_roundtrip_with_inline_threshold(ducklake_env):
-    """Export with a custom inline threshold should still produce correct Delta data."""
+    """Export with inlined data: inserts go to metadata, flush should materialize them."""
     conn, data_path = ducklake_env
     conn.execute("CREATE TABLE products (id BIGINT, name VARCHAR, price DOUBLE)")
-    conn.execute(
-        "INSERT INTO products VALUES "
-        "(1, 'Widget', 9.99), (2, 'Gadget', 19.99), (3, 'Gizmo', 29.99), "
-        "(4, 'Doohickey', 39.99), (5, 'Thingamajig', 49.99)"
-    )
-    conn.execute("UPDATE products SET price = price * 0.9 WHERE price > 20")
-    conn.execute("DELETE FROM products WHERE id = 2")
-    conn.execute("INSERT INTO products VALUES (6, 'Contraption', 59.99)")
 
     # Enable data inlining so small inserts go to metadata instead of parquet
-    conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 10)")
-    # delta_export() internally flushes inlined data and rewrites files with deletes
+    conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 100)")
+
+    # Multiple small inserts that will be inlined
+    for i in range(10):
+        conn.execute(
+            f"INSERT INTO products SELECT i, 'product_' || i, i * 9.99 "
+            f"FROM range({i * 10 + 1}, {i * 10 + 11}) t(i)"
+        )
+    # Some mutations on inlined data
+    conn.execute("UPDATE products SET price = price * 0.5 WHERE id <= 20")
+    conn.execute("DELETE FROM products WHERE id % 7 = 0")
+    conn.execute("INSERT INTO products VALUES (999, 'special', 0.01)")
+
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -143,15 +219,33 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
 
 
 def test_sqlite_backend_export(ducklake_sqlite_env):
-    """Export should work with a SQLite-backed DuckLake catalog."""
+    """SQLite backend: bulk inserts, updates, deletes — full roundtrip verification."""
     conn, data_path = ducklake_sqlite_env
-    conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
-    conn.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
+    conn.execute("CREATE TABLE orders (id BIGINT, customer VARCHAR, amount DOUBLE, status VARCHAR)")
+
+    # Bulk insert 500 rows
+    conn.execute(
+        "INSERT INTO orders "
+        "SELECT i, 'customer_' || (i % 50), i * 2.5, "
+        "CASE WHEN i % 3 = 0 THEN 'shipped' WHEN i % 3 = 1 THEN 'pending' ELSE 'cancelled' END "
+        "FROM range(1, 501) t(i)"
+    )
+    # Cancel and delete some
+    conn.execute("UPDATE orders SET status = 'refunded' WHERE status = 'cancelled' AND id < 100")
+    conn.execute("DELETE FROM orders WHERE status = 'refunded'")
+    # Bulk update amounts
+    conn.execute("UPDATE orders SET amount = amount * 1.1 WHERE status = 'shipped'")
+    # Insert more
+    conn.execute(
+        "INSERT INTO orders "
+        "SELECT i, 'new_customer', i * 0.5, 'pending' FROM range(501, 601) t(i)"
+    )
+    # Delete high-value orders
+    conn.execute("DELETE FROM orders WHERE amount > 1000")
+
     rows = conn.execute("SELECT * FROM delta_export()").fetchall()
     assert len(rows) == 1
-    table_name, status, snapshot, explanation, message = rows[0]
-    assert table_name == "main.test_table"
-    assert status == "needs_export"
+    assert rows[0][1] == "needs_export"
 
     delta_log = _find_delta_log(data_path)
     assert delta_log is not None, f"_delta_log not found under {data_path}"
@@ -159,6 +253,13 @@ def test_sqlite_backend_export(ducklake_sqlite_env):
     assert any(f.endswith(".checkpoint.parquet") for f in files)
     assert any(f.endswith(".json") for f in files)
     assert "_last_checkpoint" in files
+
+    # Verify row count matches
+    delta_table_root = os.path.dirname(delta_log)
+    ducklake_count = conn.execute("SELECT count(*) FROM orders").fetchone()[0]
+    delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{delta_table_root}')").fetchone()[0]
+    print(f"SQLite backend: DuckLake={ducklake_count}, Delta={delta_count}")
+    assert ducklake_count == delta_count, f"SQLite row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
 
 
 def test_data_type_mappings(ducklake_env):
