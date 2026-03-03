@@ -25,14 +25,16 @@ def extension_path():
 def ducklake_env(extension_path, tmp_path):
     """Returns (conn, data_path) with a real DuckLake catalog attached."""
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
-    con.execute(f"INSTALL '{extension_path}'")
-    con.execute("LOAD delta_export")
-    con.execute("INSTALL ducklake")
-    con.execute("INSTALL delta")
     ducklake_path = str(tmp_path / "metadata.ducklake")
     data_path = str(tmp_path / "data")
-    con.execute(f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}')")
-    con.execute("USE test_lake")
+    con.execute(
+        f"INSTALL '{extension_path}';"
+        f"LOAD delta_export;"
+        f"INSTALL ducklake;"
+        f"INSTALL delta;"
+        f"ATTACH 'ducklake:{ducklake_path}' AS test_lake (DATA_PATH '{data_path}');"
+        f"USE test_lake;"
+    )
     yield con, data_path
     con.close()
 
@@ -40,3 +42,26 @@ def ducklake_env(extension_path, tmp_path):
 @pytest.fixture
 def conn(ducklake_env):
     return ducklake_env[0]
+
+
+@pytest.fixture
+def ducklake_sqlite_env(extension_path, tmp_path):
+    """Returns (conn, data_path) with a SQLite-backed DuckLake catalog — single statement attach."""
+    con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+    sqlite_path = str(tmp_path / "metadata.sqlite")
+    data_path = str(tmp_path / "data")
+    con.execute(
+        f"INSTALL '{extension_path}';"
+        f"LOAD delta_export;"
+        f"INSTALL ducklake;"
+        f"INSTALL delta;"
+        f"ATTACH 'ducklake:sqlite:{sqlite_path}' AS test_lake (DATA_PATH '{data_path}');"
+        f"USE test_lake;"
+    )
+    yield con, data_path
+    con.close()
+
+
+@pytest.fixture
+def sqlite_conn(ducklake_sqlite_env):
+    return ducklake_sqlite_env[0]

@@ -142,6 +142,25 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
     assert ducklake_count == delta_count, f"Row count mismatch: DuckLake={ducklake_count}, Delta={delta_count}"
 
 
+def test_sqlite_backend_export(ducklake_sqlite_env):
+    """Export should work with a SQLite-backed DuckLake catalog."""
+    conn, data_path = ducklake_sqlite_env
+    conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
+    conn.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
+    rows = conn.execute("SELECT * FROM delta_export()").fetchall()
+    assert len(rows) == 1
+    table_name, status, snapshot, explanation, message = rows[0]
+    assert table_name == "main.test_table"
+    assert status == "needs_export"
+
+    delta_log = _find_delta_log(data_path)
+    assert delta_log is not None, f"_delta_log not found under {data_path}"
+    files = os.listdir(delta_log)
+    assert any(f.endswith(".checkpoint.parquet") for f in files)
+    assert any(f.endswith(".json") for f in files)
+    assert "_last_checkpoint" in files
+
+
 def test_data_type_mappings(ducklake_env):
     """Verify DuckDB types are correctly mapped to Delta Lake types in the schema."""
     conn, data_path = ducklake_env
