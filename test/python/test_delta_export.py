@@ -170,7 +170,9 @@ def test_roundtrip_multiple_tables_with_mutations(ducklake_env):
                 if "_delta_log" in dirs:
                     delta_table_root = root
                     # check if this is the right table by reading the checkpoint
-                    parquet_files = [f for f in os.listdir(os.path.join(root, "_delta_log")) if f.endswith(".checkpoint.parquet")]
+                    parquet_files = [
+                        f for f in os.listdir(os.path.join(root, "_delta_log")) if f.endswith(".checkpoint.parquet")
+                    ]
                     if parquet_files:
                         meta = conn.execute(
                             f"SELECT metaData.name FROM read_parquet('{os.path.join(root, '_delta_log', parquet_files[0])}') WHERE metaData IS NOT NULL"
@@ -197,10 +199,7 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
 
     # Multiple small inserts that will be inlined
     for i in range(10):
-        conn.execute(
-            f"INSERT INTO products SELECT i, 'product_' || i, i * 9.99 "
-            f"FROM range({i * 10 + 1}, {i * 10 + 11}) t(i)"
-        )
+        conn.execute(f"INSERT INTO products SELECT i, 'product_' || i, i * 9.99 FROM range({i * 10 + 1}, {i * 10 + 11}) t(i)")
     # Some mutations on inlined data
     conn.execute("UPDATE products SET price = price * 0.5 WHERE id <= 20")
     conn.execute("DELETE FROM products WHERE id % 7 = 0")
@@ -241,10 +240,7 @@ def test_sqlite_backend_export(ducklake_sqlite_env):
     # Bulk update amounts
     conn.execute("UPDATE orders SET amount = amount * 1.1 WHERE status = 'shipped'")
     # Insert more
-    conn.execute(
-        "INSERT INTO orders "
-        "SELECT i, 'new_customer', i * 0.5, 'pending' FROM range(501, 601) t(i)"
-    )
+    conn.execute("INSERT INTO orders SELECT i, 'new_customer', i * 0.5, 'pending' FROM range(501, 601) t(i)")
     # Delete high-value orders
     conn.execute("DELETE FROM orders WHERE amount > 1000")
 
