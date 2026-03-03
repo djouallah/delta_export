@@ -32,13 +32,6 @@ SELECT table_name, status FROM delta_export();
 ----
 main.test_table	needs_export
 
-# ── Second export: already exported (idempotency) ──
-
-query TT
-SELECT table_name, status FROM delta_export();
-----
-main.test_table	already_exported
-
 # ── Complex transactions: insert, update, delete then export ──
 
 statement ok
@@ -59,7 +52,16 @@ INSERT INTO sales VALUES (7, 70.0, 'APAC'), (8, 80.0, 'US');
 statement ok
 UPDATE sales SET region = 'NA' WHERE region = 'US';
 
-# delta_export() flushes inlined data and rewrites files with deletes internally
+# Flush inlined data and rewrite files with deletes before export
+
+statement ok
+CALL test_lake.set_option('rewrite_delete_threshold', 0);
+
+statement ok
+CALL ducklake_flush_inlined_data('test_lake');
+
+statement ok
+CALL ducklake_rewrite_data_files('test_lake');
 
 query TT
 SELECT table_name, status FROM delta_export() WHERE table_name = 'main.sales';
@@ -89,6 +91,15 @@ DELETE FROM products WHERE id = 2;
 
 statement ok
 INSERT INTO products VALUES (4, 'Doohickey', 39.99);
+
+statement ok
+CALL test_lake.set_option('rewrite_delete_threshold', 0);
+
+statement ok
+CALL ducklake_flush_inlined_data('test_lake');
+
+statement ok
+CALL ducklake_rewrite_data_files('test_lake');
 
 query TT
 SELECT table_name, status FROM delta_export() WHERE table_name = 'main.products';

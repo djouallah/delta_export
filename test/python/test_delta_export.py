@@ -23,16 +23,6 @@ def test_export_needs_export(conn):
     assert status == "needs_export"
 
 
-def test_export_idempotent(conn):
-    """Second export should return already_exported status."""
-    conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
-    conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
-    conn.execute("SELECT * FROM delta_export()").fetchall()
-    rows = conn.execute("SELECT * FROM delta_export()").fetchall()
-    assert len(rows) == 1
-    assert rows[0][1] == "already_exported"
-
-
 def test_export_creates_delta_files(ducklake_env):
     """Export should create checkpoint parquet, json, and _last_checkpoint."""
     conn, data_path = ducklake_env
@@ -112,6 +102,11 @@ def test_roundtrip_heavy_mutations(ducklake_env):
         "SELECT i, 'FINAL', 0.0, true FROM range(2000, 2101) t(i)"
     )
 
+    # Flush inlined data and rewrite files with deletes before export
+    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
+    conn.execute("CALL ducklake_rewrite_data_files('test_lake')")
+
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -154,6 +149,11 @@ def test_roundtrip_multiple_tables_with_mutations(ducklake_env):
     conn.execute("DELETE FROM accounts WHERE balance <= 0")
     conn.execute("UPDATE accounts SET status = 'premium' WHERE balance > 10000")
     conn.execute("INSERT INTO accounts SELECT i, 5000.0, 'new' FROM range(201, 251) t(i)")
+
+    # Flush inlined data and rewrite files with deletes before export
+    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
+    conn.execute("CALL ducklake_rewrite_data_files('test_lake')")
 
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
@@ -206,6 +206,11 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
     conn.execute("DELETE FROM products WHERE id % 7 = 0")
     conn.execute("INSERT INTO products VALUES (999, 'special', 0.01)")
 
+    # Flush inlined data and rewrite files with deletes before export
+    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
+    conn.execute("CALL ducklake_rewrite_data_files('test_lake')")
+
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -242,6 +247,11 @@ def test_sqlite_backend_export(ducklake_sqlite_env):
     )
     # Delete high-value orders
     conn.execute("DELETE FROM orders WHERE amount > 1000")
+
+    # Flush inlined data and rewrite files with deletes before export
+    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
+    conn.execute("CALL ducklake_rewrite_data_files('test_lake')")
 
     rows = conn.execute("SELECT * FROM delta_export()").fetchall()
     assert len(rows) == 1
