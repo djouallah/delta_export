@@ -281,24 +281,24 @@ def test_dbt_duckdb_pattern(extension_path, tmp_path):
 
     # Exactly how dbt-duckdb sets up the connection
     conn = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+    # No USE ducklake — dbt-duckdb qualifies table names instead
     conn.execute(
         f"INSTALL '{extension_path}';"
         f"LOAD delta_export;"
         f"ATTACH 'ducklake:sqlite:{sqlite_path}' AS ducklake (DATA_PATH '{data_path}');"
-        f"USE ducklake;"
     )
 
-    # Simulate dbt models creating tables, then on-run-end: flush, rewrite
+    # Simulate dbt models: fully qualified names (no USE), then on-run-end hooks
     conn.execute(
-        "CREATE SCHEMA IF NOT EXISTS aemo;"
-        "CREATE TABLE aemo.demand (ts TIMESTAMP, region VARCHAR, value DOUBLE);"
-        "INSERT INTO aemo.demand "
+        "CREATE SCHEMA IF NOT EXISTS ducklake.aemo;"
+        "CREATE TABLE ducklake.aemo.demand (ts TIMESTAMP, region VARCHAR, value DOUBLE);"
+        "INSERT INTO ducklake.aemo.demand "
         "SELECT '2024-01-01'::TIMESTAMP + INTERVAL (i) HOUR, "
         "CASE i % 3 WHEN 0 THEN 'NSW' WHEN 1 THEN 'VIC' ELSE 'QLD' END, "
         "i * 100.0 "
         "FROM range(1, 201) t(i);"
-        "CREATE TABLE aemo.prices (ts TIMESTAMP, region VARCHAR, price DOUBLE);"
-        "INSERT INTO aemo.prices "
+        "CREATE TABLE ducklake.aemo.prices (ts TIMESTAMP, region VARCHAR, price DOUBLE);"
+        "INSERT INTO ducklake.aemo.prices "
         "SELECT '2024-01-01'::TIMESTAMP + INTERVAL (i) HOUR, "
         "CASE i % 3 WHEN 0 THEN 'NSW' WHEN 1 THEN 'VIC' ELSE 'QLD' END, "
         "i * 5.5 "
@@ -320,7 +320,7 @@ def test_dbt_duckdb_pattern(extension_path, tmp_path):
                 f"WHERE metaData IS NOT NULL"
             ).fetchone()
             table_name = meta[0] if meta else "unknown"
-            ducklake_count = conn.execute(f"SELECT count(*) FROM aemo.{table_name}").fetchone()[0]
+            ducklake_count = conn.execute(f"SELECT count(*) FROM ducklake.aemo.{table_name}").fetchone()[0]
             delta_count = conn.execute(f"SELECT count(*) FROM delta_scan('{root}')").fetchone()[0]
             print(f"dbt pattern - {table_name}: DuckLake={ducklake_count}, Delta={delta_count}")
             assert (

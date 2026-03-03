@@ -627,14 +627,12 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	// ── Run export on the current database ──
 	// Use a separate Connection to avoid deadlocking context.Query() inside a scan
 	Connection conn(*context.db);
-	auto &default_db = DatabaseManager::GetDefaultDatabase(context);
+	// Find the DuckLake metadata catalog — works with USE, dbt (no USE), or direct attach
 	string metadata_catalog;
-	if (!default_db.empty()) {
-		string candidate = "__ducklake_metadata_" + default_db;
-		auto check = conn.Query("SELECT 1 FROM duckdb_databases() WHERE database_name = '" + candidate + "'");
-		if (!check->HasError() && check->RowCount() > 0) {
-			metadata_catalog = candidate;
-		}
+	auto db_check = conn.Query(
+	    "SELECT database_name FROM duckdb_databases() WHERE starts_with(database_name, '__ducklake_metadata_') LIMIT 1");
+	if (!db_check->HasError() && db_check->RowCount() > 0) {
+		metadata_catalog = db_check->GetValue(0, 0).ToString();
 	}
 
 	// Step 1: Build export summary (reads ducklake_* tables)
