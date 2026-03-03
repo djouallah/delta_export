@@ -14,6 +14,15 @@ namespace duckdb {
 // SQL Statements — kept close to the original export.sql for maintainability
 //===--------------------------------------------------------------------===//
 
+static constexpr const char *SQL_CREATE_EXPORT_LOG = R"(
+CREATE TABLE IF NOT EXISTS ducklake_export_log (
+    table_id BIGINT,
+    snapshot_id BIGINT,
+    export_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (table_id, snapshot_id)
+);
+)";
+
 static constexpr const char *SQL_CREATE_EXPORT_SUMMARY = R"(
 CREATE OR REPLACE TEMP TABLE export_summary (
     table_id BIGINT,
@@ -74,6 +83,15 @@ table_last_modified AS (
            AND df.end_snapshot IS NULL
         ) AS file_count
     FROM active_tables t
+),
+export_status AS (
+    SELECT
+        tm.*,
+        (SELECT MAX(el.snapshot_id)
+         FROM ducklake_export_log el
+         WHERE el.table_id = tm.table_id
+        ) AS last_exported_snapshot
+    FROM table_last_modified tm
 )
 SELECT
     table_id,
@@ -82,14 +100,18 @@ SELECT
     table_root,
     CASE
         WHEN file_count = 0 THEN 'no_data_files'
+        WHEN last_modified_snapshot IS NULL THEN 'no_changes'
+        WHEN last_exported_snapshot IS NOT NULL AND last_exported_snapshot >= last_modified_snapshot THEN 'already_exported'
         ELSE 'needs_export'
     END AS status,
     last_modified_snapshot AS snapshot_id,
     CASE
         WHEN file_count = 0 THEN 'Table has no data files (empty table)'
+        WHEN last_modified_snapshot IS NULL THEN 'No changes recorded'
+        WHEN last_exported_snapshot IS NOT NULL AND last_exported_snapshot >= last_modified_snapshot THEN 'Snapshot ' || last_modified_snapshot || ' already exported'
         ELSE 'Ready for export'
     END AS message
-FROM table_last_modified;
+FROM export_status;
 )";
 
 static constexpr const char *SQL_CREATE_CHECKPOINT_PARQUET = R"(
@@ -526,14 +548,16 @@ SELECT
     snapshot_id AS data_snapshot,
     CASE
         WHEN status = 'no_data_files' THEN 'Table has 0 parquet files (empty)'
-        WHEN status = 'needs_export' THEN 'Data snapshot ' || snapshot_id || ' exported to Delta'
+        WHEN status = 'already_exported' THEN 'Data snapshot ' || snapshot_id || ' already exported'
+        WHEN status = 'needs_export' THEN 'Data snapshot ' || snapshot_id || ' needs Delta export'
     END AS explanation,
     message
 FROM export_summary
 ORDER BY
     CASE status
         WHEN 'needs_export' THEN 1
-        WHEN 'no_data_files' THEN 2
+        WHEN 'already_exported' THEN 2
+        WHEN 'no_data_files' THEN 3
     END,
     schema_name, table_name;
 )";
@@ -623,11 +647,21 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	if (!default_db.empty()) {
 		// Switch to the DuckLake internal metadata database (regular DuckDB),
 		// not the DuckLake catalog itself. This is where ducklake_metadata,
-		// ducklake_table, ducklake_snapshot, etc. live.
+		// ducklake_table etc. live, and where ducklake_export_log is created.
 		conn.Query("USE \"__ducklake_metadata_" + default_db + "\"");
 	}
 
-	// Step 1: Build export summary
+	// Step 0: Flush inlined data and rewrite files with deletes so parquet files are accurate
+	if (!default_db.empty()) {
+		ExecuteSQL(conn, "CALL \"" + default_db + "\".set_option('rewrite_delete_threshold', 0)");
+		ExecuteSQL(conn, "CALL ducklake_flush_inlined_data('" + default_db + "')");
+		ExecuteSQL(conn, "CALL ducklake_rewrite_data_files('" + default_db + "')");
+	}
+
+	// Step 1: Create export tracking table
+	ExecuteSQL(conn, SQL_CREATE_EXPORT_LOG);
+
+	// Step 2: Build export summary
 	ExecuteSQL(conn, SQL_CREATE_EXPORT_SUMMARY);
 	ExecuteSQL(conn, SQL_INSERT_EXPORT_SUMMARY);
 
@@ -662,6 +696,8 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		string json_file = exports_result->GetValue(5, i).ToString();
 		string last_checkpoint_file = exports_result->GetValue(6, i).ToString();
 
+		ExecuteSQL(conn, "BEGIN TRANSACTION;");
+
 		string tid = std::to_string(table_id);
 		string sid = std::to_string(snapshot_id);
 
@@ -689,6 +725,13 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		                   "TO '" +
 		                   last_checkpoint_file + "' (FORMAT CSV, HEADER false, QUOTE '');";
 		ExecuteSQL(conn, copy_last);
+
+		string insert_log = "INSERT INTO ducklake_export_log (table_id, snapshot_id) "
+		                    "VALUES (" +
+		                    tid + ", " + sid + ");";
+		ExecuteSQL(conn, insert_log);
+
+		ExecuteSQL(conn, "COMMIT;");
 	}
 
 	// Step 9: Collect and return results

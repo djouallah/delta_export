@@ -23,6 +23,16 @@ def test_export_needs_export(conn):
     assert status == "needs_export"
 
 
+def test_export_idempotent(conn):
+    """Second export should return already_exported status."""
+    conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
+    conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
+    conn.execute("SELECT * FROM delta_export()").fetchall()
+    rows = conn.execute("SELECT * FROM delta_export()").fetchall()
+    assert len(rows) == 1
+    assert rows[0][1] == "already_exported"
+
+
 def test_export_creates_delta_files(ducklake_env):
     """Export should create checkpoint parquet, json, and _last_checkpoint."""
     conn, data_path = ducklake_env
@@ -91,11 +101,7 @@ def test_roundtrip_data(ducklake_env):
     # Another update
     conn.execute("UPDATE sales SET region = 'NA' WHERE region = 'US'")
 
-    # Flush inlined data and compact deleted rows before read-only export
-    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
-    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
-    conn.execute("CALL ducklake_rewrite_data_files('test_lake')")
-
+    # delta_export() internally flushes inlined data and rewrites files with deletes
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -123,12 +129,7 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
 
     # Enable data inlining so small inserts go to metadata instead of parquet
     conn.execute("CALL test_lake.set_option('data_inlining_row_limit', 10)")
-
-    # Flush inlined data and compact deleted rows before read-only export
-    conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
-    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
-    conn.execute("CALL ducklake_rewrite_data_files('test_lake')")
-
+    # delta_export() internally flushes inlined data and rewrites files with deletes
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
