@@ -88,19 +88,13 @@ def test_roundtrip_heavy_mutations(ducklake_env):
     # Update half the remaining rows
     conn.execute("UPDATE events SET value = value * 2.0, category = 'X' WHERE id % 2 = 1")
     # Insert another batch
-    conn.execute(
-        "INSERT INTO events "
-        "SELECT i, 'NEW', i * 0.1, false FROM range(1001, 1501) t(i)"
-    )
+    conn.execute("INSERT INTO events " "SELECT i, 'NEW', i * 0.1, false FROM range(1001, 1501) t(i)")
     # Delete some of the new rows
     conn.execute("DELETE FROM events WHERE id > 1400")
     # Update across old and new rows
     conn.execute("UPDATE events SET active = false WHERE value > 500")
     # One more insert
-    conn.execute(
-        "INSERT INTO events "
-        "SELECT i, 'FINAL', 0.0, true FROM range(2000, 2101) t(i)"
-    )
+    conn.execute("INSERT INTO events " "SELECT i, 'FINAL', 0.0, true FROM range(2000, 2101) t(i)")
 
     # Flush inlined data and rewrite files with deletes before export
     conn.execute("CALL test_lake.set_option('rewrite_delete_threshold', 0)")
@@ -199,7 +193,9 @@ def test_roundtrip_with_inline_threshold(ducklake_env):
 
     # Multiple small inserts that will be inlined
     for i in range(10):
-        conn.execute(f"INSERT INTO products SELECT i, 'product_' || i, i * 9.99 FROM range({i * 10 + 1}, {i * 10 + 11}) t(i)")
+        conn.execute(
+            f"INSERT INTO products SELECT i, 'product_' || i, i * 9.99 FROM range({i * 10 + 1}, {i * 10 + 11}) t(i)"
+        )
     # Some mutations on inlined data
     conn.execute("UPDATE products SET price = price * 0.5 WHERE id <= 20")
     conn.execute("DELETE FROM products WHERE id % 7 = 0")
