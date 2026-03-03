@@ -30,7 +30,7 @@ static constexpr const char *SQL_INSERT_EXPORT_SUMMARY = R"(
 INSERT INTO export_summary
 WITH
 data_root_config AS (
-    SELECT value AS data_root FROM ducklake_metadata WHERE key = 'data_path'
+    SELECT value AS data_root FROM {META}ducklake_metadata WHERE key = 'data_path'
 ),
 active_tables AS (
     SELECT
@@ -45,31 +45,31 @@ active_tables AS (
                 ELSE ''
             END ||
             trim(t.path, '/') AS table_root
-    FROM ducklake_table t
-    JOIN ducklake_schema s USING(schema_id)
+    FROM {META}ducklake_table t
+    JOIN {META}ducklake_schema s USING(schema_id)
     WHERE t.end_snapshot IS NULL
 ),
 current_snapshot AS (
-    SELECT MAX(snapshot_id) AS snapshot_id FROM ducklake_snapshot
+    SELECT MAX(snapshot_id) AS snapshot_id FROM {META}ducklake_snapshot
 ),
 table_last_modified AS (
     SELECT
         t.*,
         COALESCE(
             (SELECT MAX(sc.snapshot_id)
-             FROM ducklake_snapshot_changes sc
+             FROM {META}ducklake_snapshot_changes sc
              WHERE regexp_matches(sc.changes_made, '[:,]' || t.table_id || '([^0-9]|$)')
             ),
             (SELECT cs.snapshot_id
              FROM current_snapshot cs
              WHERE EXISTS (
-                 SELECT 1 FROM ducklake_data_file df
+                 SELECT 1 FROM {META}ducklake_data_file df
                  WHERE df.table_id = t.table_id
                    AND df.end_snapshot IS NULL
              )
             )
         ) AS last_modified_snapshot,
-        (SELECT COUNT(*) FROM ducklake_data_file df
+        (SELECT COUNT(*) FROM {META}ducklake_data_file df
          WHERE df.table_id = t.table_id
            AND df.end_snapshot IS NULL
         ) AS file_count
@@ -100,7 +100,7 @@ tables_to_export AS (
     FROM export_summary es
     WHERE es.status = 'needs_export'
       AND EXISTS (
-          SELECT 1 FROM ducklake_data_file df
+          SELECT 1 FROM {META}ducklake_data_file df
           WHERE df.table_id = es.table_id
             AND df.end_snapshot IS NULL
       )
@@ -139,8 +139,8 @@ table_schemas AS (
             'metadata': MAP{}::MAP(VARCHAR, VARCHAR)
         }::STRUCT(name VARCHAR, type VARCHAR, nullable BOOLEAN, metadata MAP(VARCHAR, VARCHAR)) ORDER BY c.column_order) AS schema_fields
     FROM tables_to_export te
-    JOIN ducklake_table t ON te.table_id = t.table_id
-    JOIN ducklake_column c ON t.table_id = c.table_id
+    JOIN {META}ducklake_table t ON te.table_id = t.table_id
+    JOIN {META}ducklake_column c ON t.table_id = c.table_id
     WHERE c.end_snapshot IS NULL
     GROUP BY te.table_id, te.schema_name, te.table_name, te.snapshot_id, te.table_root
 ),
@@ -155,9 +155,9 @@ file_column_stats_agg AS (
         MAX(fcs.max_value) AS max_value,
         MAX(fcs.null_count) AS null_count
     FROM table_schemas ts
-    JOIN ducklake_data_file df ON ts.table_id = df.table_id
-    LEFT JOIN ducklake_file_column_stats fcs ON df.data_file_id = fcs.data_file_id
-    LEFT JOIN ducklake_column c ON fcs.column_id = c.column_id
+    JOIN {META}ducklake_data_file df ON ts.table_id = df.table_id
+    LEFT JOIN {META}ducklake_file_column_stats fcs ON df.data_file_id = fcs.data_file_id
+    LEFT JOIN {META}ducklake_column c ON fcs.column_id = c.column_id
     WHERE df.end_snapshot IS NULL
       AND c.column_id IS NOT NULL
       AND c.end_snapshot IS NULL
@@ -232,7 +232,7 @@ file_metadata AS (
             'value': fct.null_count
         } ORDER BY fct.column_name) FILTER (WHERE fct.column_name IS NOT NULL AND fct.null_count IS NOT NULL)), MAP{}::MAP(VARCHAR, BIGINT)) AS null_count
     FROM table_schemas ts
-    JOIN ducklake_data_file df ON ts.table_id = df.table_id
+    JOIN {META}ducklake_data_file df ON ts.table_id = df.table_id
     LEFT JOIN file_column_stats_transformed fct ON df.data_file_id = fct.data_file_id
     WHERE df.end_snapshot IS NULL
     GROUP BY ts.table_id, ts.schema_name, ts.table_name, ts.snapshot_id,
@@ -542,31 +542,8 @@ ORDER BY
 // Helper: Qualify ducklake_* table names with the metadata catalog prefix
 //===--------------------------------------------------------------------===//
 static string QualifyMetadataTables(const string &sql, const string &metadata_catalog) {
-	if (metadata_catalog.empty()) {
-		return sql;
-	}
-	string prefix = "\"" + metadata_catalog + "\".";
-	// Replace longest names first to avoid partial matches
-	// e.g. ducklake_snapshot_changes before ducklake_snapshot
-	string result = sql;
-	vector<string> tables = {"ducklake_file_column_stats", "ducklake_snapshot_changes", "ducklake_data_file",
-	                         "ducklake_metadata",         "ducklake_snapshot",         "ducklake_column",
-	                         "ducklake_schema",           "ducklake_table"};
-	for (auto &table : tables) {
-		string qualified = prefix + table;
-		// Replace all occurrences
-		size_t pos = 0;
-		while ((pos = result.find(table, pos)) != string::npos) {
-			// Don't double-qualify if already prefixed
-			if (pos >= prefix.size() && result.substr(pos - prefix.size(), prefix.size()) == prefix) {
-				pos += table.size();
-				continue;
-			}
-			result.replace(pos, table.size(), qualified);
-			pos += qualified.size();
-		}
-	}
-	return result;
+	string prefix = metadata_catalog.empty() ? "" : "\"" + metadata_catalog + "\".";
+	return StringUtil::Replace(sql, "{META}", prefix);
 }
 
 //===--------------------------------------------------------------------===//
@@ -651,8 +628,14 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	// Use a separate Connection to avoid deadlocking context.Query() inside a scan
 	Connection conn(*context.db);
 	auto &default_db = DatabaseManager::GetDefaultDatabase(context);
-	// Build the metadata catalog name for qualifying ducklake_* table references
-	string metadata_catalog = default_db.empty() ? "" : "__ducklake_metadata_" + default_db;
+	string metadata_catalog;
+	if (!default_db.empty()) {
+		string candidate = "__ducklake_metadata_" + default_db;
+		auto check = conn.Query("SELECT 1 FROM duckdb_databases() WHERE database_name = '" + candidate + "'");
+		if (!check->HasError() && check->RowCount() > 0) {
+			metadata_catalog = candidate;
+		}
+	}
 
 	// Step 1: Build export summary (reads ducklake_* tables)
 	ExecuteSQL(conn, SQL_CREATE_EXPORT_SUMMARY);
