@@ -629,8 +629,8 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	Connection conn(*context.db);
 	// Find the DuckLake metadata catalog — works with USE, dbt (no USE), or direct attach
 	string metadata_catalog;
-	auto db_check = conn.Query(
-	    "SELECT database_name FROM duckdb_databases() WHERE starts_with(database_name, '__ducklake_metadata_') LIMIT 1");
+	auto db_check = conn.Query("SELECT database_name FROM duckdb_databases() WHERE starts_with(database_name, "
+	                           "'__ducklake_metadata_') LIMIT 1");
 	if (!db_check->HasError() && db_check->RowCount() > 0) {
 		metadata_catalog = db_check->GetValue(0, 0).ToString();
 	}
