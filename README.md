@@ -12,7 +12,7 @@ LOAD delta_export;
 ## Usage
 
 ```sql
-ATTACH 'ducklake:metadata.ducklake' AS my_catalog (DATA_PATH '/path/to/data');
+ATTACH 'metadata.ducklake' AS my_catalog;
 USE my_catalog;
 CALL delta_export();
 ```
@@ -37,7 +37,7 @@ con = duckdb.connect()
 con.sql("""
     INSTALL delta_export FROM community;
     LOAD delta_export;
-    ATTACH 'ducklake:/tmp/md.db' AS db;
+    ATTACH '/tmp/metadata.ducklake' AS db;
     USE db;
     CALL delta_export();
 """)
