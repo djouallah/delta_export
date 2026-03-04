@@ -65,6 +65,10 @@ CALL ducklake_rewrite_data_files('my_catalog');
 CALL delta_export();
 ```
 
+## Real-world example
+
+For a production example using delta_export with dbt, see https://github.com/djouallah/dbt
+
 ## Requirements
 
 - DuckDB v1.4.x+
