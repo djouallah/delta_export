@@ -16,6 +16,7 @@ def test_export_needs_export(conn):
     """First export should return needs_export status."""
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
     rows = conn.execute("SELECT * FROM delta_export()").fetchall()
     assert len(rows) == 1
     table_name, status, snapshot, explanation, message = rows[0]
@@ -28,6 +29,7 @@ def test_export_creates_delta_files(ducklake_env):
     conn, data_path = ducklake_env
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -44,6 +46,7 @@ def test_checkpoint_parquet_readable(ducklake_env):
     conn, data_path = ducklake_env
     conn.execute("CREATE TABLE test_table (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO test_table VALUES (1, 'Alice')")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
@@ -63,6 +66,7 @@ def test_multiple_tables(conn):
     conn.execute("INSERT INTO orders VALUES (1, 99.99), (2, 149.50)")
     conn.execute("CREATE TABLE customers (id BIGINT, name VARCHAR)")
     conn.execute("INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')")
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
     rows = conn.execute("SELECT * FROM delta_export() ORDER BY table_name").fetchall()
     assert len(rows) == 2
     names = [r[0] for r in rows]
@@ -354,6 +358,7 @@ def test_data_type_mappings(ducklake_env):
         "INSERT INTO typed_table VALUES "
         "(1, 100, 1000, 100000, 1.5, 2.5, true, 'hello', '\\x0102'::BLOB, '2024-01-01', '2024-01-01 12:00:00')"
     )
+    conn.execute("CALL ducklake_flush_inlined_data('test_lake')")
     conn.execute("SELECT * FROM delta_export()").fetchall()
 
     delta_log = _find_delta_log(data_path)
