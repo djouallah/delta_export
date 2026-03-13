@@ -37,7 +37,7 @@ Three workflows:
 2. **IntegrationTest.yml** — runs after LinuxBuild or on `test/python/**` changes. Downloads artifact, runs pytest.
 3. **MainDistributionPipeline.yml** — full multi-platform build, manual only (`workflow_dispatch`).
 
-## DuckDB v1.4.x API
+## DuckDB v1.5.x API
 
 - Use `ExtensionLoader`, not `ExtensionUtil` (removed). No `#define DUCKDB_EXTENSION_MAIN`.
 - `Connection::Query()` returns `unique_ptr<MaterializedQueryResult>` directly.
