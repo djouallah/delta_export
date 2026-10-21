@@ -1,0 +1,66 @@
+name: CI
+# Everything, on every pull request and every push to main: the community-extensions build for all platforms,
+# format and tidy, and every test against the linux_amd64 build. A green run is safe to merge and release.
+# OneLake + SQL endpoint uses the repository's Azure identity, so it runs on pushes to main only.
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - 'extension_config.cmake'
+      - 'duckdb'
+      - 'extension-ci-tools'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - 'extension_config.cmake'
+      - 'duckdb'
+      - 'extension-ci-tools'
+      - '.github/workflows/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write # pytest cache
+  id-token: write # OneLake OIDC (pushes to main only)
+
+jobs:
+  # The same build community-extensions runs: DuckDB v2.0.0-alpha46057, every platform
+  distribution:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
+    with:
+      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
+      ci_tools_version: v2.0-cyanoptera
+      extension_name: delta_export
+
+  code-quality:
+    name: Code Quality Check
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v2.0-cyanoptera
+    with:
+      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
+      ci_tools_version: v2.0-cyanoptera
+      extension_name: delta_export
+
+  # The binary the tests load, built at the test wheel's DuckDB commit
+  build:
+    uses: ./.github/workflows/LinuxBuild.yml
+
+  tests:
+    needs: build
+    uses: ./.github/workflows/IntegrationTest.yml
+    with:
+      full: true
+      fuzz_seeds: '30'
+      onelake: ${{ github.event_name == 'push' }}
+    secrets: inherit

@@ -31,11 +31,11 @@ Test extension deps in Makefile: `DEFAULT_TEST_EXTENSION_DEPS=json;parquet`.
 
 ## CI
 
-Three workflows:
-
-1. **LinuxBuild.yml** — builds linux_amd64 on `src/**` and build file changes, uploads artifact.
-2. **IntegrationTest.yml** — runs after LinuxBuild or on `test/python/**` changes. Downloads artifact, runs pytest.
-3. **MainDistributionPipeline.yml** — full multi-platform build, manual only (`workflow_dispatch`).
+1. **CI.yml** — every pull request and every push to `main` (src, test, build files, submodules, workflows) runs everything: the community-extensions build for all platforms (`b15358c`), format + tidy, then LinuxBuild and IntegrationTest with all tests and 30 fuzz seeds. OneLake + SQL endpoint runs only on pushes to `main` (Azure OIDC secrets never reach fork code). Green = safe to merge and release.
+2. **LinuxBuild.yml** — reusable (called by CI) and dispatchable: builds the linux_amd64 test binary, uploads `delta_export-linux_amd64`.
+3. **IntegrationTest.yml** — reusable (called by CI with this run's build) and dispatchable for quick reruns: `only`, `tests=` (-k), `full`, `fuzz_seed`, `run_id` (artifact of that run; default the latest CI build on `main`). Dispatched runs re-run only last failures (`--lf`) unless `full=true`.
+4. **MainDistributionPipeline.yml** — multi-platform build plus GitHub Pages deploy, manual or tag push.
+5. **Format.yml** — dispatch to apply `make format-fix` in CI and commit it.
 
 ## DuckDB 2.0 API
 

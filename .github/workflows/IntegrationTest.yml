@@ -1,15 +1,21 @@
 name: Integration Test
-# Each job keeps pytest's last-failed cache: a run only re-runs the tests that failed in the previous run of
-# that job (nothing when nothing failed). Dispatch with full=true to run everything, only=<job> to run one
-# job, tests=<pytest -k expression> to run chosen tests.
+# Called by CI.yml with this run's build (every test; OneLake only on pushes to main, never with fork code).
+# Dispatch it to rerun tests against the build of run_id, or else the latest CI build on main. Dispatched
+# runs keep pytest's last-failed cache: they re-run only the tests that failed in the previous run of that
+# job (nothing when nothing failed). full=true runs everything, only=<job> one job, tests=<pytest -k
+# expression> chosen tests.
 on:
-  workflow_run:
-    workflows: ["Linux Build"]
-    types: [completed]
-    branches: [main]
-  push:
-    paths:
-      - 'test/python/**'
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: true
+      fuzz_seeds:
+        type: string
+        default: '30'
+      onelake:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       only:
@@ -30,6 +36,9 @@ on:
       fuzz_seed:
         description: 'Replay a single fuzz seed (overrides fuzz_seeds)'
         default: ''
+      run_id:
+        description: 'Run whose delta_export-linux_amd64 artifact to test (default: latest CI build on main)'
+        default: ''
 
 permissions:
   contents: read
@@ -43,7 +52,7 @@ env:
 jobs:
   python-tests:
     name: Python tests
-    if: ${{ (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && (github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'python') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'python' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,23 +61,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download extension artifact
-        uses: dawidd6/action-download-artifact@v6
+      # From CI: this run's build. Dispatched: the run named by run_id, else the latest CI build on main
+      - name: Download extension (this run)
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
         with:
           name: delta_export-linux_amd64
-          run_id: ${{ github.event.workflow_run.id }}
           path: ./artifact
-          search_artifacts: true
-          if_no_artifact_found: warn
 
-      - name: Fallback - download latest artifact
-        if: ${{ hashFiles('artifact/delta_export.duckdb_extension') == '' }}
+      - name: Download extension (run_id)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id != '' }}
         uses: dawidd6/action-download-artifact@v6
         with:
           name: delta_export-linux_amd64
-          workflow: LinuxBuild.yml
+          run_id: ${{ inputs.run_id }}
           path: ./artifact
+
+      - name: Download extension (latest CI build on main)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id == '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          workflow: CI.yml
+          branch: main
+          workflow_conclusion: completed
           search_artifacts: true
+          path: ./artifact
 
       - uses: actions/cache/restore@v4
         with:
@@ -93,7 +111,7 @@ jobs:
 
   spark-tests:
     name: Spark (Fabric Runtime 2.0)
-    if: ${{ (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && (github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'spark') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'spark' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -104,23 +122,31 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Download extension artifact
-        uses: dawidd6/action-download-artifact@v6
+      - name: Download extension (this run)
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
         with:
           name: delta_export-linux_amd64
-          run_id: ${{ github.event.workflow_run.id }}
           path: ./artifact
-          search_artifacts: true
-          if_no_artifact_found: warn
 
-      - name: Fallback - download latest artifact
-        if: ${{ hashFiles('artifact/delta_export.duckdb_extension') == '' }}
+      - name: Download extension (run_id)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id != '' }}
         uses: dawidd6/action-download-artifact@v6
         with:
           name: delta_export-linux_amd64
-          workflow: LinuxBuild.yml
+          run_id: ${{ inputs.run_id }}
           path: ./artifact
+
+      - name: Download extension (latest CI build on main)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id == '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          workflow: CI.yml
+          branch: main
+          workflow_conclusion: completed
           search_artifacts: true
+          path: ./artifact
 
       - uses: actions/setup-java@v4
         with:
@@ -155,9 +181,10 @@ jobs:
 
   onelake-tests:
     # Live OneLake round trip ending with the Fabric SQL analytics endpoint reading the exported tables. Auth is
-    # GitHub OIDC only: the test exchanges the job's id-token for tokens (workload-identity federation).
+    # GitHub OIDC only: the test exchanges the job's id-token for tokens (workload-identity federation). It uses
+    # the repository's Azure identity, so CI runs it only on pushes to main, never on pull requests.
     name: OneLake + SQL endpoint
-    if: ${{ (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && (github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'onelake') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' && inputs.onelake) || (github.event_name == 'workflow_dispatch' && (inputs.only == 'all' || inputs.only == 'onelake')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -174,23 +201,31 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download extension artifact
-        uses: dawidd6/action-download-artifact@v6
+      - name: Download extension (this run)
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
         with:
           name: delta_export-linux_amd64
-          run_id: ${{ github.event.workflow_run.id }}
           path: ./artifact
-          search_artifacts: true
-          if_no_artifact_found: warn
 
-      - name: Fallback - download latest artifact
-        if: ${{ hashFiles('artifact/delta_export.duckdb_extension') == '' }}
+      - name: Download extension (run_id)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id != '' }}
         uses: dawidd6/action-download-artifact@v6
         with:
           name: delta_export-linux_amd64
-          workflow: LinuxBuild.yml
+          run_id: ${{ inputs.run_id }}
           path: ./artifact
+
+      - name: Download extension (latest CI build on main)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id == '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          workflow: CI.yml
+          branch: main
+          workflow_conclusion: completed
           search_artifacts: true
+          path: ./artifact
 
       - run: pip install duckdb==2.0.0.dev2610162032 azure-identity mssql-python pytest
 

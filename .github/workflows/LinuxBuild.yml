@@ -1,24 +1,9 @@
 name: Linux Build
+# Builds the linux_amd64 binary the tests load. Called by CI.yml; dispatch it alone for a quick build, then
+# test that run's artifact with Integration Test (run_id).
 on:
-  push:
-    paths:
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'Makefile'
-      - 'extension_config.cmake'
-      - 'duckdb'
-      - 'extension-ci-tools'
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'Makefile'
-      - 'extension_config.cmake'
+  workflow_call:
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}
-  cancel-in-progress: true
 
 jobs:
   build:
