@@ -1699,7 +1699,8 @@ static void RemoveDeltaLog(FileSystem &fs, const string &table_root) {
 
 // Adds one export_summary row per removed (or failed) log. Candidates are dropped ducklake_table rows plus
 // exported logs under this catalog's schema folders whose table is gone (its rows may be expired already).
-static void RemoveDroppedTableLogs(Connection &conn, FileSystem &fs) {
+// A non-empty only_schemas limits both to those schemas, whose live tables must all be in export_summary.
+static void RemoveDroppedTableLogs(Connection &conn, FileSystem &fs, const std::set<string> &only_schemas) {
 	std::set<string> live_roots;
 	auto live = ExecuteSQL(conn, "SELECT table_root FROM export_summary WHERE table_root IS NOT NULL");
 	for (idx_t i = 0; i < live->RowCount(); i++) {
@@ -1719,7 +1720,8 @@ static void RemoveDroppedTableLogs(Connection &conn, FileSystem &fs) {
 	for (idx_t i = 0; i < dropped->RowCount(); i++) {
 		auto root = dropped->GetValue(0, i).ToString();
 		auto key = NormalizePath(root);
-		if (live_roots.count(key)) {
+		if (live_roots.count(key) ||
+		    (!only_schemas.empty() && !only_schemas.count(dropped->GetValue(2, i).ToString()))) {
 			continue;
 		}
 		auto schema_uuid = dropped->GetValue(4, i);
@@ -1734,6 +1736,9 @@ static void RemoveDroppedTableLogs(Connection &conn, FileSystem &fs) {
 	                                "WHERE schema_root IS NOT NULL AND schema_uuid IS NOT NULL");
 	const string checkpoint_suffix = "/_delta_log/_last_checkpoint";
 	for (idx_t i = 0; i < schemas->RowCount(); i++) {
+		if (!only_schemas.empty() && !only_schemas.count(schemas->GetValue(0, i).ToString())) {
+			continue;
+		}
 		auto schema_root = schemas->GetValue(2, i).ToString();
 		auto schema_prefix = NormalizePath(schema_root) + "/";
 		for (auto &hit : GlobOrEmpty(fs, schema_root + "/*" + checkpoint_suffix)) {
@@ -1907,7 +1912,76 @@ static bool LoadPreviousState(Connection &conn, const string &checkpoint) {
 	return !meta->HasError();
 }
 
-struct DeltaExportBindData : public TableFunctionData {};
+struct DeltaExportBindData : public TableFunctionData {
+	//! tables := [...] and schemas := [...]; both empty exports the whole catalog
+	vector<string> tables;
+	vector<string> schemas;
+
+	bool Filtered() const {
+		return !tables.empty() || !schemas.empty();
+	}
+};
+
+// Fills TEMP table selected_tables(table_id) with the live tables named in tables := [...] ('name' in any schema,
+// 'schema.name' in that one) and every live table of the schemas in schemas := [...]. Names ignore case like DuckDB
+// identifiers; an unknown or ambiguous name fails the export. Returns the named schemas as DuckLake spells them.
+static std::set<string> SelectTables(Connection &conn, const MetadataLocation &meta,
+                                     const DeltaExportBindData &bind_data) {
+	ExecuteSQL(conn, "CREATE OR REPLACE TEMP TABLE selected_tables (table_id BIGINT)");
+	for (auto &name : bind_data.tables) {
+		auto match = ExecuteSQL(conn, "SELECT count(DISTINCT table_id), string_agg(schema_name || '.' || table_name, "
+		                              "', ' ORDER BY schema_name), any_value(table_id) FROM table_roots WHERE "
+		                              "end_snapshot IS NULL AND lower('" +
+		                                  EscapeSqlString(name) +
+		                                  "') IN (lower(table_name), lower(schema_name || '.' || table_name))");
+		auto count = ResultValue<int64_t>(*match, 0, 0, "match");
+		if (count == 0) {
+			throw InvalidInputException("Delta export failed: no table \"%s\" in the DuckLake catalog", name);
+		}
+		if (count > 1) {
+			throw InvalidInputException("Delta export failed: \"%s\" matches %s; name the schema", name,
+			                            match->GetValue(1, 0).ToString());
+		}
+		ExecuteSQL(conn, "INSERT INTO selected_tables VALUES (" + match->GetValue(2, 0).ToString() + ")");
+	}
+	std::set<string> schemas;
+	for (auto &name : bind_data.schemas) {
+		auto match = ExecuteSQL(conn, QualifyMetadataTables("SELECT schema_name FROM {META}ducklake_schema WHERE "
+		                                                    "end_snapshot IS NULL AND lower(schema_name) = lower('" +
+		                                                        EscapeSqlString(name) + "')",
+		                                                    meta));
+		if (match->RowCount() == 0) {
+			throw InvalidInputException("Delta export failed: no schema \"%s\" in the DuckLake catalog", name);
+		}
+		auto schema = match->GetValue(0, 0).ToString();
+		ExecuteSQL(conn, "INSERT INTO selected_tables SELECT table_id FROM table_roots WHERE end_snapshot IS NULL AND "
+		                 "schema_name = '" +
+		                     EscapeSqlString(schema) + "'");
+		schemas.insert(schema);
+	}
+	return schemas;
+}
+
+// The names in a list option. A list given but empty fails rather than fall back to exporting everything.
+static vector<string> ListOption(TableFunctionBindInput &input, const char *option) {
+	vector<string> names;
+	auto entry = input.named_parameters.find(option);
+	if (entry == input.named_parameters.end()) {
+		return names;
+	}
+	if (!entry->second.IsNull()) {
+		for (auto &name : ListValue::GetChildren(entry->second)) {
+			if (name.IsNull()) {
+				throw InvalidInputException("Delta export failed: %s must not contain NULL", option);
+			}
+			names.push_back(name.ToString());
+		}
+	}
+	if (names.empty()) {
+		throw InvalidInputException("Delta export failed: %s must not be empty", option);
+	}
+	return names;
+}
 
 struct DeltaExportGlobalState : public GlobalTableFunctionState {
 	bool finished = false;
@@ -1936,7 +2010,10 @@ static unique_ptr<FunctionData> DeltaExportBind(ClientContext &context, TableFun
 	names.emplace_back("message");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return make_uniq<DeltaExportBindData>();
+	auto result = make_uniq<DeltaExportBindData>();
+	result->tables = ListOption(input, "tables");
+	result->schemas = ListOption(input, "schemas");
+	return std::move(result);
 }
 
 static unique_ptr<GlobalTableFunctionState> DeltaExportGlobalInit(ClientContext &context,
@@ -1980,17 +2057,34 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 	// Locate the DuckLake metadata catalog from the main context — works with USE, dbt (no USE), a hidden
 	// metadata catalog (DuckLake on DuckDB >= 1.5.3), METADATA_CATALOG / METADATA_SCHEMA, or a direct attach
 	auto meta = ResolveMetadataLocation(context);
-
-	// Rows DuckLake still keeps inlined in the metadata catalog are in no parquet file, so a Delta reader would
-	// never see them: flush them first. A read-only lake cannot flush; its inlined rows stay out of the export.
-	if (!meta.lake.empty()) {
-		conn.Query("CALL ducklake_flush_inlined_data('" + EscapeSqlString(meta.lake) + "')");
-	}
+	auto &bind_data = data.bind_data->Cast<DeltaExportBindData>();
 
 	// Step 1: Build export summary (reads ducklake_* tables)
 	ExecuteSQL(conn, SQL_CREATE_EXPORT_SUMMARY);
 	ExecuteSQL(conn, QualifyMetadataTables(SQL_CREATE_TABLE_ROOTS, meta));
+	auto filtered = bind_data.Filtered();
+	auto schemas = filtered ? SelectTables(conn, meta, bind_data) : std::set<string>();
+
+	// Rows DuckLake still keeps inlined in the metadata catalog are in no parquet file, so a Delta reader would
+	// never see them: flush them first. A read-only lake cannot flush; its inlined rows stay out of the export.
+	if (!meta.lake.empty()) {
+		auto flush = "CALL ducklake_flush_inlined_data('" + EscapeSqlString(meta.lake) + "'";
+		if (!filtered) {
+			conn.Query(flush + ")");
+		} else {
+			auto named = ExecuteSQL(conn, "SELECT schema_name, table_name FROM table_roots WHERE end_snapshot IS NULL "
+			                              "AND table_id IN (SELECT table_id FROM selected_tables)");
+			for (idx_t i = 0; i < named->RowCount(); i++) {
+				conn.Query(flush + ", schema_name := '" + EscapeSqlString(named->GetValue(0, i).ToString()) +
+				           "', table_name := '" + EscapeSqlString(named->GetValue(1, i).ToString()) + "')");
+			}
+		}
+	}
+
 	ExecuteSQL(conn, QualifyMetadataTables(SQL_INSERT_EXPORT_SUMMARY, meta));
+	if (filtered) {
+		ExecuteSQL(conn, "DELETE FROM export_summary WHERE table_id NOT IN (SELECT table_id FROM selected_tables)");
+	}
 
 	// The client file system carries the secrets of the session (S3, Azure, ...)
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -2112,8 +2206,11 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 		// endpoint caches table metadata) read them. They go with the log when the table is dropped.
 	}
 
-	// Step 9: Remove the Delta logs of tables dropped in DuckLake
-	RemoveDroppedTableLogs(conn, fs);
+	// Step 9: Remove the Delta logs of tables dropped in DuckLake, only in the named schemas when filtered: an export
+	// of named tables alone touches no other log
+	if (!filtered || !schemas.empty()) {
+		RemoveDroppedTableLogs(conn, fs, schemas);
+	}
 
 	// Step 10: Collect and return results
 	auto summary_result = ExecuteSQL(conn, SQL_GET_EXPORT_SUMMARY);
@@ -2152,13 +2249,22 @@ static void DeltaExportScan(ClientContext &context, TableFunctionInput &data, Da
 static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction func("delta_export", {}, DeltaExportScan, DeltaExportBind);
 	func.init_global = DeltaExportGlobalInit;
+	func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("tables", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("schemas", LogicalType::LIST(LogicalType::VARCHAR));
+	});
 
 	CreateTableFunctionInfo info(func);
 	FunctionDescription desc;
 	desc.description = "Exports every table of the DuckLake catalog in use (or the first attached lake) to Delta Lake "
 	                   "by writing _delta_log metadata over the existing parquet files, with deletes as deletion "
-	                   "vectors; also removes the Delta logs of dropped tables. Returns one status row per table.";
-	desc.examples = {"CALL delta_export();", "SELECT table_name, status, data_snapshot FROM delta_export();"};
+	                   "vectors; also removes the Delta logs of dropped tables. With tables := ['name', "
+	                   "'schema.name'] and/or schemas := ['schema'] only those tables, and every table of those "
+	                   "schemas, are exported, and dropped-table logs are removed only in those schemas. Returns one "
+	                   "status row per table.";
+	desc.examples = {"CALL delta_export();", "CALL delta_export(tables := ['main.orders']);",
+	                 "CALL delta_export(schemas := ['sales'], tables := ['main.orders']);",
+	                 "SELECT table_name, status, data_snapshot FROM delta_export();"};
 	desc.categories = {"ducklake", "delta", "export"};
 	info.descriptions.push_back(std::move(desc));
 	// what the bare RegisterFunction(TableFunction) overload does internally

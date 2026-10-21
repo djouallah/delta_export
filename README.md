@@ -17,6 +17,16 @@ USE my_catalog;
 CALL delta_export();
 ```
 
+To export only some tables, name them with `tables` (a bare name matches in any schema, `schema.table` only in that schema) and/or whole schemas with `schemas`. Names ignore case:
+
+```sql
+CALL delta_export(tables := ['main.orders']);                       -- just main.orders
+CALL delta_export(schemas := ['sales']);                            -- every table in sales, including new ones
+CALL delta_export(schemas := ['sales'], tables := ['main.orders']); -- both
+```
+
+Only the selected tables are flushed and exported. Delta logs of dropped tables are removed only in the schemas named with `schemas`; a `tables`-only export removes none. A name that matches no table or schema, or a bare table name found in several schemas, fails the call.
+
 The function returns a summary table showing the export status of each table:
 
 | table_name | status | data_snapshot | explanation | message |

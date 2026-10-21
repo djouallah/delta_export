@@ -56,7 +56,7 @@ def test_function_has_description(conn):
         "SELECT description, examples FROM duckdb_functions() WHERE function_name = 'delta_export'"
     ).fetchone()
     assert description
-    assert examples and all("delta_export()" in e for e in examples)
+    assert examples and all("delta_export(" in e for e in examples)
 
 
 # ── #5a: deletes become deletion vectors ──
