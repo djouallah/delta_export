@@ -10,9 +10,6 @@ on:
       full:
         type: boolean
         default: true
-      fuzz_seeds:
-        type: string
-        default: '30'
       onelake:
         type: boolean
         default: false
@@ -30,12 +27,6 @@ on:
         description: 'Run every test instead of only the last failures'
         type: boolean
         default: false
-      fuzz_seeds:
-        description: 'Number of fuzz seeds (0..n-1)'
-        default: '8'
-      fuzz_seed:
-        description: 'Replay a single fuzz seed (overrides fuzz_seeds)'
-        default: ''
       run_id:
         description: 'Run whose delta_export-linux_amd64 artifact to test (default: latest CI build on main)'
         default: ''
@@ -163,13 +154,10 @@ jobs:
       # pytz: DuckDB needs it to return TIMESTAMPTZ values to Python
       - run: pip install duckdb==2.0.0.dev2610162032 pyspark==4.1.1 delta-spark==4.2.0 pyarrow pytz pytest
 
-      # Spark + Delta Lake is the reference reader: smoke suite, edge cases, randomized workloads
+      # Spark + Delta Lake is the reference reader: smoke suite and edge cases (randomized workloads: Fuzz.yml)
       - name: pytest
-        env:
-          FUZZ_SEEDS: ${{ inputs.fuzz_seeds || '8' }}
-          FUZZ_SEED: ${{ inputs.fuzz_seed }}
         run: |
-          set -- -v -s --tb=long -m spark
+          set -- -v -s --tb=long -m spark --ignore=test/python/test_spark_fuzz.py
           if [ -n "$TESTS" ]; then set -- "$@" -k "$TESTS"; elif [ "$FULL" != "true" ]; then set -- "$@" --lf --lfnf none; fi
           pytest test/python/ "$@" || { rc=$?; [ $rc -eq 5 ] && echo "nothing failed last time: no tests to re-run (dispatch full=true for everything)" && exit 0; exit $rc; }
 

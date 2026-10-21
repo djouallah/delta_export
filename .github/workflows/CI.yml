@@ -1,6 +1,6 @@
 name: CI
 # Everything, on every pull request and every push to main: the community-extensions build for all platforms,
-# format and tidy, and every test against the linux_amd64 build. A green run is safe to merge and release.
+# format and tidy, and the tests against the linux_amd64 build (randomized fuzzing runs separately: Fuzz.yml).
 # OneLake + SQL endpoint uses the repository's Azure identity, so it runs on pushes to main only.
 on:
   pull_request:
@@ -61,6 +61,5 @@ jobs:
     uses: ./.github/workflows/IntegrationTest.yml
     with:
       full: true
-      fuzz_seeds: '30'
       onelake: ${{ github.event_name == 'push' }}
     secrets: inherit

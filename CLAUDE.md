@@ -31,11 +31,12 @@ Test extension deps in Makefile: `DEFAULT_TEST_EXTENSION_DEPS=json;parquet`.
 
 ## CI
 
-1. **CI.yml** — every pull request and every push to `main` (src, test, build files, submodules, workflows) runs everything: the community-extensions build for all platforms (`b15358c`), format + tidy, then LinuxBuild and IntegrationTest with all tests and 30 fuzz seeds. OneLake + SQL endpoint runs only on pushes to `main` (Azure OIDC secrets never reach fork code). Green = safe to merge and release.
+1. **CI.yml** — every pull request and every push to `main` (src, test, build files, submodules, workflows) runs everything: the community-extensions build for all platforms (`b15358c`), format + tidy, then LinuxBuild and IntegrationTest (Python, Spark smoke + edge cases; no fuzzing). OneLake + SQL endpoint runs only on pushes to `main` (Azure OIDC secrets never reach fork code). Green = safe to merge and release.
 2. **LinuxBuild.yml** — reusable (called by CI) and dispatchable: builds the linux_amd64 test binary, uploads `delta_export-linux_amd64`.
-3. **IntegrationTest.yml** — reusable (called by CI with this run's build) and dispatchable for quick reruns: `only`, `tests=` (-k), `full`, `fuzz_seed`, `run_id` (artifact of that run; default the latest CI build on `main`). Dispatched runs re-run only last failures (`--lf`) unless `full=true`.
+3. **IntegrationTest.yml** — reusable (called by CI with this run's build) and dispatchable for quick reruns: `only`, `tests=` (-k), `full`, `run_id` (artifact of that run; default the latest CI build on `main`). Dispatched runs re-run only last failures (`--lf`) unless `full=true`.
 4. **MainDistributionPipeline.yml** — multi-platform build plus GitHub Pages deploy, manual or tag push.
 5. **Format.yml** — dispatch to apply `make format-fix` in CI and commit it.
+6. **Fuzz.yml** — manual only: randomized workloads checked against Spark (`fuzz_seeds`, default 30, about 1.5 min each; `fuzz_seed` replays one; `run_id` as above). Run it before a release.
 
 ## DuckDB 2.0 API
 

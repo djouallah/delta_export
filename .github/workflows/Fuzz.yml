@@ -1,0 +1,67 @@
+name: Fuzz
+# Randomized DuckLake workloads checked against Spark (Fabric Runtime 2.0) after every export. Slow (about
+# 1.5 minutes per seed), so it runs only when dispatched, e.g. before a release. Tests the build of run_id,
+# or else the latest CI build on main. A failing seed prints its statement log; replay it with fuzz_seed.
+on:
+  workflow_dispatch:
+    inputs:
+      fuzz_seeds:
+        description: 'Number of fuzz seeds (0..n-1)'
+        default: '30'
+      fuzz_seed:
+        description: 'Replay a single fuzz seed (overrides fuzz_seeds)'
+        default: ''
+      run_id:
+        description: 'Run whose delta_export-linux_amd64 artifact to test (default: latest CI build on main)'
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  fuzz:
+    name: Fuzz (Spark, Fabric Runtime 2.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      DELTA_EXPORT_EXTENSION_PATH: ./artifact/delta_export.duckdb_extension
+      FUZZ_SEEDS: ${{ inputs.fuzz_seeds }}
+      FUZZ_SEED: ${{ inputs.fuzz_seed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fabric Runtime 2.0: Spark 4.1, Delta Lake 4.2, Java 21, Python 3.13
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Download extension (run_id)
+        if: ${{ inputs.run_id != '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          run_id: ${{ inputs.run_id }}
+          path: ./artifact
+
+      - name: Download extension (latest CI build on main)
+        if: ${{ inputs.run_id == '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: delta_export-linux_amd64
+          workflow: CI.yml
+          branch: main
+          workflow_conclusion: completed
+          search_artifacts: true
+          path: ./artifact
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # delta-spark 4.2.0 pins pyspark <= 4.1.1
+      # pytz: DuckDB needs it to return TIMESTAMPTZ values to Python
+      - run: pip install duckdb==2.0.0.dev2610162032 pyspark==4.1.1 delta-spark==4.2.0 pyarrow pytz pytest
+
+      - run: pytest test/python/test_spark_fuzz.py -v -s --tb=long
